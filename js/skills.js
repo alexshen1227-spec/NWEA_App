@@ -353,13 +353,21 @@
       idea: "a^(m/n) = (ⁿ√a)^m = ⁿ√(aᵐ). The denominator is the root, the numerator is the power.",
       example: { stem: "27^(2/3)", steps: ["³√27 = 3", "3² = <b>9</b>"] }
     },
-    gen(rng) {
-      const k = rng.int(2, 4), d = rng.pick([2, 3]), n = rng.int(2, 3);
-      const base = Math.pow(k, d), val = Math.pow(k, n);
+    gen(rng, diff) {
+      const k = rng.int(2, D(diff, 4, 5, 6));
+      const d = rng.pick(D(diff, [2, 3], [2, 3], [2, 3, 4]));
+      let n = rng.int(2, D(diff, 3, 4, 4)); if (n === d) n = (d === 2 ? 3 : 2);
+      const base = Math.pow(k, d), powVal = Math.pow(k, n);
+      const negative = diff >= 2 && rng.bool(0.35);
+      const expHTML = negative ? `&minus;${n}/${d}` : `${n}/${d}`;
+      const misses = [{ near: base * n / d, msg: "Don't multiply base × exponent — the denominator is a ROOT, the numerator is a POWER." }];
+      if (negative) misses.push({ near: powVal, msg: "A NEGATIVE exponent means take the reciprocal — the answer is 1 over that." });
       return numProblem({
-        stem: `Evaluate:&nbsp; ${base}${sup(`${n}/${d}`)}`,
-        answer: val, answerHTML: `${val}`,
-        solution: [`${base}^(${n}/${d}) = (${d}√${base})${sup(n)} = ${k}${sup(n)}`, `= <b>${val}</b>`]
+        stem: `Evaluate:&nbsp; ${base}${sup(expHTML)}`,
+        answer: negative ? 1 / powVal : powVal,
+        answerHTML: negative ? fracHTML(1, powVal) : `${powVal}`, tol: negative ? 0.0005 : 0.01,
+        solution: [`The ${d}th root of ${base} is ${k}`, `${k}${sup((negative ? "&minus;" : "") + n)} = <b>${negative ? fracHTML(1, powVal) : powVal}</b>`],
+        misses
       });
     }
   });
@@ -614,13 +622,19 @@
       idea: "Constant ratio r. nth term: aₙ = a₁ · r^(n−1).",
       example: { stem: "2, 6, 18, … find a₅", steps: ["a₁=2, r=3", "2·3⁴ = 2·81 = <b>162</b>"] }
     },
-    gen(rng) {
-      const a1 = rng.int(1, 5), r = rng.int(2, 3), n = rng.int(4, 7);
+    gen(rng, diff) {
+      const a1 = rng.int(1, D(diff, 4, 6, 9));
+      const r = rng.pick(D(diff, [2, 3], [2, 3, 4], [2, 3, 4, 5]));
+      const n = rng.int(4, D(diff, 6, 7, 8));
       const an = a1 * Math.pow(r, n - 1);
       return numProblem({
         stem: `Geometric sequence: a₁ = ${a1}, ratio r = ${r}. Find a${sub(n)}.`,
         answer: an, answerHTML: `a${sub(n)} = ${an}`,
-        solution: [`aₙ = a₁·r^(n−1) = ${a1}·${r}${sup(n - 1)}`, `= ${a1}·${Math.pow(r, n - 1)} = <b>${an}</b>`]
+        solution: [`aₙ = a₁·r^(n−1) = ${a1}·${r}${sup(n - 1)}`, `= ${a1}·${Math.pow(r, n - 1)} = <b>${an}</b>`],
+        misses: [
+          { near: a1 + r * (n - 1), msg: "That's an arithmetic step — geometric sequences MULTIPLY by r each time: a₁·r^(n−1)." },
+          { near: a1 * Math.pow(r, n), msg: "Off by one in the exponent — it's r^(n−1), not r^n." }
+        ]
       });
     }
   });
@@ -687,12 +701,20 @@
       idea: "log_b(x) asks “b to WHAT power gives x?”. logs and exponents are inverses: log_b(x) = y ⇔ bʸ = x.",
       example: { stem: "log₂(32)", steps: ["2 to what power is 32? 2⁵ = 32 → <b>5</b>"] }
     },
-    gen(rng) {
-      const b = rng.pick([2, 3, 5]); const e = rng.int(2, 5); const x = Math.pow(b, e);
+    gen(rng, diff) {
+      const b = rng.pick(D(diff, [2, 3, 5], [2, 3, 4, 5, 10], [2, 3, 4, 5, 6, 7, 10]));
+      const e = rng.int(2, D(diff, 4, 5, 6)); const x = Math.pow(b, e);
+      const solveForm = diff >= 2 && rng.bool();
+      const misses = [{ near: x / b, msg: `A log gives the EXPONENT, not a division — ask "${b} to what power equals ${x}?"` }];
+      if (solveForm) return numProblem({
+        stem: `Solve for x:&nbsp; ${b}${sup("x")} = ${x}`,
+        answer: e, answerHTML: `x = ${e}`,
+        solution: [`${b} to what power = ${x}?`, `${b}${sup(e)} = ${x} → <b>x = ${e}</b>`], misses
+      });
       return numProblem({
         stem: `Evaluate:&nbsp; log<sub>${b}</sub>(${x})`,
         answer: e, answerHTML: `${e}`,
-        solution: [`${b} to what power = ${x}?`, `${b}${sup(e)} = ${x} → <b>${e}</b>`]
+        solution: [`${b} to what power = ${x}?`, `${b}${sup(e)} = ${x} → <b>${e}</b>`], misses
       });
     }
   });
@@ -704,18 +726,32 @@
       idea: "In a right triangle, a² + b² = c² where c is the hypotenuse (across from the right angle). Solve for the missing side.",
       example: { stem: "legs 6 and 8", steps: ["c² = 36 + 64 = 100", "c = <b>10</b>"] }
     },
-    gen(rng) {
-      const triples = [[3, 4, 5], [5, 12, 13], [8, 15, 17], [7, 24, 25], [6, 8, 10], [9, 12, 15], [9, 40, 41], [20, 21, 29]];
-      const [a, b, c] = rng.pick(triples); const findHyp = rng.bool(0.6);
+    gen(rng, diff) {
+      // mix: scaled Pythagorean triples (clean answers) + random legs (irrational hyp, rounded)
+      if (diff >= 2 && rng.bool(0.45)) {
+        const a = rng.int(D(diff, 4, 5, 6), D(diff, 10, 15, 22)), b = rng.int(D(diff, 4, 5, 6), D(diff, 10, 15, 22));
+        const c = Math.sqrt(a * a + b * b);
+        return numProblem({
+          stem: `A right triangle has legs ${a} and ${b}. Find the hypotenuse (round to 2 decimals).`,
+          diagram: svgRight(a, b, "?"), answer: round(c, 2), answerHTML: `≈ ${round(c, 2)}`, tol: 0.02,
+          solution: [`c² = ${a}² + ${b}² = ${a * a + b * b}`, `c = √${a * a + b * b} ≈ <b>${round(c, 2)}</b>`],
+          misses: [{ near: a + b, msg: "You added the legs — Pythagoras is a² + b² = c², then take the square root." }]
+        });
+      }
+      const base = rng.pick([[3, 4, 5], [5, 12, 13], [8, 15, 17], [7, 24, 25], [20, 21, 29], [9, 40, 41]]);
+      const k = rng.int(1, D(diff, 2, 3, 4));
+      const a = base[0] * k, b = base[1] * k, c = base[2] * k; const findHyp = rng.bool(0.6);
       if (findHyp) return numProblem({
         stem: `A right triangle has legs ${a} and ${b}. Find the hypotenuse.`,
         diagram: svgRight(a, b, "?"), answer: c, answerHTML: `${c}`, tol: 0.02,
-        solution: [`c² = ${a}² + ${b}² = ${a * a} + ${b * b} = ${c * c}`, `c = √${c * c} = <b>${c}</b>`]
+        solution: [`c² = ${a}² + ${b}² = ${a * a} + ${b * b} = ${c * c}`, `c = √${c * c} = <b>${c}</b>`],
+        misses: [{ near: a + b, msg: "You added the legs — it's a² + b² = c², not a + b = c." }]
       });
       return numProblem({
         stem: `A right triangle has hypotenuse ${c} and one leg ${a}. Find the other leg.`,
         diagram: svgRight("?", a, c), answer: b, answerHTML: `${b}`, tol: 0.02,
-        solution: [`b² = ${c}² − ${a}² = ${c * c} − ${a * a} = ${b * b}`, `b = <b>${b}</b>`]
+        solution: [`b² = ${c}² − ${a}² = ${c * c} − ${a * a} = ${b * b}`, `b = <b>${b}</b>`],
+        misses: [{ near: c - a, msg: "You subtracted the sides directly — use b² = c² − a², THEN square-root." }]
       });
     }
   });
@@ -1004,14 +1040,22 @@
       idea: "Order matters → permutation nPr = n!/(n−r)!. Order doesn't matter → combination nCr = n!/(r!(n−r)!).",
       example: { stem: "Choose 3 of 5 (order matters)", steps: ["5·4·3 = <b>60</b>"] }
     },
-    gen(rng) {
-      const n = rng.int(4, 8), r = rng.int(2, Math.min(4, n - 1)); const perm = rng.bool();
+    gen(rng, diff) {
+      const n = rng.int(D(diff, 4, 5, 6), D(diff, 8, 10, 12));
+      const r = rng.int(2, Math.min(D(diff, 3, 4, 5), n - 1));
       function fact(x) { let f = 1; for (let i = 2; i <= x; i++) f *= i; return f; }
+      const perm = rng.bool();
       const val = perm ? fact(n) / fact(n - r) : fact(n) / (fact(r) * fact(n - r));
+      const permCtx = [`arrange ${r} of ${n} books in a row`, `award the top ${r} of ${n} runners distinct medals`, `seat ${r} of ${n} people in ${r} numbered chairs`, `fill ${r} ranked offices (president, VP, …) from ${n} students`];
+      const combCtx = [`choose ${r} of ${n} pizza toppings`, `form a committee of ${r} from ${n} people`, `pick ${r} lottery numbers from ${n}`, `select ${r} of ${n} books to bring (order doesn't matter)`];
+      const ctx = perm ? rng.pick(permCtx) : rng.pick(combCtx);
       return numProblem({
-        stem: `${perm ? "How many ordered arrangements" : "How many ways to choose (order doesn't matter)"} of ${r} from ${n} ${perm ? "items" : "items"}? (${perm ? "₍" + n + "₎P₍" + r + "₎" : "₍" + n + "₎C₍" + r + "₎"})`,
+        stem: `In how many ways can you ${ctx}?&nbsp; (${n}${perm ? "P" : "C"}${r})`,
         answer: val, answerHTML: `${val}`, tol: 0.02,
-        solution: [perm ? `nPr = n!/(n−r)! = ${n}!/${n - r}!` : `nCr = n!/(r!(n−r)!)`, `= <b>${val}</b>`]
+        solution: [perm ? `Order matters → ${n}P${r} = ${n}! / (${n}−${r})!` : `Order doesn't matter → ${n}C${r} = ${n}! / (${r}!·(${n}−${r})!)`, `= <b>${val}</b>`],
+        misses: perm
+          ? [{ near: fact(n) / (fact(r) * fact(n - r)), msg: "Order MATTERS here, so use a permutation — don't divide by r! the way a combination does." }]
+          : [{ near: fact(n) / fact(n - r), msg: "Order does NOT matter here — divide by r! to remove the duplicate orderings (use a combination)." }]
       });
     }
   });
@@ -1023,15 +1067,31 @@
       example: { stem: "hours studied vs test score, points rise together → positive r." }
     },
     gen(rng) {
-      const t = rng.pick([
-        { d: "As x increases, y steadily increases.", a: "Strong positive correlation" },
-        { d: "As x increases, y steadily decreases.", a: "Strong negative correlation" },
-        { d: "Points are scattered with no pattern.", a: "No correlation" }
-      ]);
+      const ctxs = [
+        ["hours studied", "test score", "pos"], ["daily high temperature", "ice-cream sales", "pos"],
+        ["a car's age", "its resale value", "neg"], ["hours of TV watched", "exam score", "neg"],
+        ["a person's height", "their shoe size", "pos"], ["altitude up a mountain", "air temperature", "neg"],
+        ["weekly practice hours", "free-throw %", "pos"], ["a phone's age", "its battery life", "neg"],
+        ["fertilizer used", "plant height", "pos"], ["outdoor temperature", "heating bill", "neg"],
+        ["calories eaten per day", "body weight", "pos"], ["a car's speed", "time to arrive", "neg"],
+        ["years of work experience", "salary", "pos"], ["distance driven", "fuel left in the tank", "neg"],
+        ["a student's ID number", "their test score", "none"], ["shoe size", "math grade", "none"],
+        ["day of the month", "temperature that day", "none"], ["a person's age", "letters in their name", "none"],
+        ["hours of sleep", "reaction time on a test", "neg"], ["amount of rain", "umbrella sales", "pos"]
+      ];
+      const c = rng.pick(ctxs);
+      const map = { pos: "Positive correlation", neg: "Negative correlation", none: "No correlation" };
+      const correct = map[c[2]];
+      const distractors = ["Positive correlation", "Negative correlation", "No correlation"].filter(o => o !== correct).map(o => {
+        if (c[2] !== "none" && ((c[2] === "pos" && o === "Negative correlation") || (c[2] === "neg" && o === "Positive correlation")))
+          return { html: o, miss: `Wrong direction — as ${c[0]} increases, ${c[1]} ${c[2] === "pos" ? "increases (positive)" : "decreases (negative)"}.` };
+        if (c[2] === "none" && o !== "No correlation") return { html: o, miss: "These two variables aren't really related, so there's no trend either way." };
+        return o;
+      });
       return mcProblem({
-        stem: `A scatterplot shows: “${t.d}” Which best describes the correlation?`,
-        solution: [`<b>${t.a}</b>`]
-      }, mkMC(rng, t.a, ["Strong positive correlation", "Strong negative correlation", "No correlation"].filter(x => x !== t.a)));
+        stem: `A scatterplot plots <b>${c[0]}</b> (x) against <b>${c[1]}</b> (y). What correlation would you expect?`,
+        solution: [c[2] === "none" ? "These aren't really related, so the points show no trend." : `As ${c[0]} increases, ${c[1]} tends to ${c[2] === "pos" ? "increase" : "decrease"}.`, `<b>${correct}</b>`]
+      }, mkMC(rng, correct, distractors));
     }
   });
 
@@ -1118,19 +1178,33 @@
       mnemonic: "45-45-90 → ×√2 to the hypotenuse. 30-60-90 → short, short·√3, short·2.",
       example: { stem: "45-45-90 with legs 5", steps: ["hypotenuse = 5√2"] }
     },
-    gen(rng) {
-      const x = rng.int(2, 9);
-      if (rng.bool()) {
+    gen(rng, diff) {
+      const x = rng.int(2, D(diff, 9, 14, 20));
+      const kind = rng.int(0, 4);
+      if (kind === 0) { // 45-45-90: legs -> hyp
         const correct = radicalHTML(x, 2);
         return mcProblem({ stem: `A 45-45-90 triangle has legs of length ${x}. Find the hypotenuse.`,
-          solution: [`hyp = leg·√2 = ${x}√2`, `<b>${correct}</b>`] },
-          mkMC(rng, correct, [radicalHTML(x, 3), `${2 * x}`, `${x}`]));
+          solution: [`hyp = leg·√2`, `<b>${correct}</b>`] },
+          mkMC(rng, correct, [{ html: radicalHTML(x, 3), miss: "×√3 is the 30-60-90 ratio. A 45-45-90 hypotenuse is leg·√2." }, `${2 * x}`, `${x}`]));
       }
-      const ask = rng.bool();
-      const correct = ask ? radicalHTML(x, 3) : `${2 * x}`;
-      return mcProblem({ stem: `A 30-60-90 triangle has a short leg of length ${x}. Find the ${ask ? "longer leg" : "hypotenuse"}.`,
-        solution: [ask ? `long leg = short·√3 = ${x}√3` : `hyp = 2·short = ${2 * x}`, `<b>${correct}</b>`] },
-        mkMC(rng, correct, [radicalHTML(x, 2), ask ? `${2 * x}` : radicalHTML(x, 3), `${x}`]));
+      if (kind === 1) { // 30-60-90: short -> long
+        const correct = radicalHTML(x, 3);
+        return mcProblem({ stem: `A 30-60-90 triangle has a short leg of length ${x}. Find the longer leg.`,
+          solution: [`long leg = short·√3`, `<b>${correct}</b>`] },
+          mkMC(rng, correct, [{ html: radicalHTML(x, 2), miss: "√2 is for 45-45-90. The long leg of a 30-60-90 is short·√3." }, `${2 * x}`, `${x}`]));
+      }
+      if (kind === 2) { // 30-60-90: short -> hyp
+        const correct = `${2 * x}`;
+        return mcProblem({ stem: `A 30-60-90 triangle has a short leg of length ${x}. Find the hypotenuse.`,
+          solution: [`hyp = 2·short`, `<b>${correct}</b>`] },
+          mkMC(rng, correct, [{ html: radicalHTML(x, 3), miss: "×√3 gives the LONG leg. The hypotenuse is 2·(short leg)." }, radicalHTML(x, 2), `${x}`]));
+      }
+      // 30-60-90: hypotenuse given -> short or long
+      const h = 2 * x; const askLong = rng.bool();
+      const correct = askLong ? radicalHTML(x, 3) : `${x}`;
+      return mcProblem({ stem: `A 30-60-90 triangle has hypotenuse ${h}. Find the ${askLong ? "longer leg" : "shorter leg"}.`,
+        solution: [`short leg = hyp ÷ 2 = ${x}`, askLong ? `long leg = short·√3 = <b>${correct}</b>` : `<b>shorter leg = ${x}</b>`] },
+        mkMC(rng, correct, [askLong ? `${h}` : radicalHTML(x, 3), radicalHTML(x, 2), askLong ? `${x}` : `${h}`]));
     }
   });
 
@@ -1289,53 +1363,40 @@ S.push({
   },
   gen(rng, diff) {
     const forms = [
-      () => ({
-        stem: "Solve d = rt for t",
-        correct: fracHTML("d","r"),
-        ds: [
-          { html: fracHTML("r","d"), miss: "You inverted the fraction — divide d by r, not r by d." },
-          { html: `d &minus; r`, miss: "r is multiplied by t, so divide by r — don't subtract." },
-          fracHTML("d","rt")
-        ]
-      }),
-      () => ({
-        stem: "Solve P = 2l + 2w for w",
-        correct: fracHTML(`P &minus; 2l`,"2"),
-        ds: [
-          { html: fracHTML("P","2"), miss: "Subtract 2l from P first, then divide by 2." },
-          { html: fracHTML(`P &minus; 2l`,"4"), miss: "Divide by 2, not 4." },
-          { html: `P &minus; 2l &minus; 2`, miss: "The 2 is a coefficient (divide), not a term to subtract." }
-        ]
-      }),
-      () => ({
-        stem: "Solve A = ½bh for h",
-        correct: fracHTML("2A","b"),
-        ds: [
-          { html: fracHTML("A","2b"), miss: "Multiply both sides by 2 first; that puts 2 in the numerator." },
-          { html: fracHTML("A","b"), miss: "You dropped the factor of 2 — multiply by 2 to clear the ½." },
-          { html: fracHTML("2A","bh"), miss: "Solve for h — h can't remain on the right." }
-        ]
-      }),
-      () => ({
-        stem: "Solve y = mx + b for x",
-        correct: fracHTML(`y &minus; b`,"m"),
-        ds: [
-          { html: fracHTML("y","m"), miss: "Subtract b from y before dividing by m." },
-          { html: `m(y &minus; b)`, miss: "m is multiplied by x, so divide by m — don't multiply." },
-          { html: fracHTML(`y + b`,"m"), miss: "Move +b to the other side as −b." }
-        ]
-      }),
-      () => ({
-        stem: "Solve V = lwh for h",
-        correct: fracHTML("V","lw"),
-        ds: [
-          { html: `V &minus; lw`, miss: "l and w multiply h, so divide by lw — don't subtract." },
-          { html: fracHTML("lw","V"), miss: "You inverted it — divide V by lw." },
-          { html: fracHTML("V","lwh"), miss: "Solve for h — it can't stay in the denominator." }
-        ]
-      })
+      // ---- single-step (easier) ----
+      () => ({ stem: "Solve d = rt for t", correct: fracHTML("d", "r"),
+        ds: [{ html: fracHTML("r", "d"), miss: "Inverted — divide d by r, not r by d." }, { html: `d &minus; r`, miss: "r is multiplied by t, so divide by r — don't subtract." }, fracHTML("d", "rt")] }),
+      () => ({ stem: "Solve A = lw for w", correct: fracHTML("A", "l"),
+        ds: [{ html: fracHTML("l", "A"), miss: "Inverted — divide A by l." }, { html: `A &minus; l`, miss: "l multiplies w, so divide by l — don't subtract." }, fracHTML("A", "lw")] }),
+      () => ({ stem: "Solve F = ma for a", correct: fracHTML("F", "m"),
+        ds: [{ html: fracHTML("m", "F"), miss: "Inverted — divide F by m." }, { html: `Fm`, miss: "m multiplies a, so divide by m — don't multiply." }, { html: `F &minus; m`, miss: "m is a factor (divide), not a term to subtract." }] }),
+      () => ({ stem: "Solve y = kx for x", correct: fracHTML("y", "k"),
+        ds: [{ html: fracHTML("k", "y"), miss: "Inverted — divide y by k." }, { html: `yk`, miss: "Divide by k, don't multiply." }, { html: `y &minus; k`, miss: "k multiplies x, so divide." }] }),
+      () => ({ stem: "Solve W = Fd for d", correct: fracHTML("W", "F"),
+        ds: [{ html: fracHTML("F", "W"), miss: "Inverted — divide W by F." }, { html: `WF`, miss: "Divide by F, don't multiply." }, { html: `W &minus; F`, miss: "F multiplies d, so divide." }] }),
+      () => ({ stem: "Solve P = IV for V", correct: fracHTML("P", "I"),
+        ds: [{ html: fracHTML("I", "P"), miss: "Inverted — divide P by I." }, { html: `PI`, miss: "Divide by I, don't multiply." }, { html: `P &minus; I`, miss: "I multiplies V, so divide." }] }),
+      () => ({ stem: "Solve A = ½bh for h", correct: fracHTML("2A", "b"),
+        ds: [{ html: fracHTML("A", "2b"), miss: "Multiply both sides by 2 first — that puts 2 in the numerator." }, { html: fracHTML("A", "b"), miss: "You dropped the 2 — multiply by 2 to clear the ½." }, fracHTML("2A", "bh")] }),
+      // ---- multi-step ----
+      () => ({ stem: "Solve P = 2l + 2w for w", correct: fracHTML(`P &minus; 2l`, "2"),
+        ds: [{ html: fracHTML("P", "2"), miss: "Subtract 2l from P first, then divide by 2." }, { html: fracHTML(`P &minus; 2l`, "4"), miss: "Divide by 2, not 4." }, { html: `P &minus; 2l &minus; 2`, miss: "The 2 is a coefficient (divide), not a term to subtract." }] }),
+      () => ({ stem: "Solve y = mx + b for x", correct: fracHTML(`y &minus; b`, "m"),
+        ds: [{ html: fracHTML("y", "m"), miss: "Subtract b from y before dividing by m." }, { html: `m(y &minus; b)`, miss: "m multiplies x, so divide by m — don't multiply." }, { html: fracHTML(`y + b`, "m"), miss: "Move +b to the other side as −b." }] }),
+      () => ({ stem: "Solve V = lwh for h", correct: fracHTML("V", "lw"),
+        ds: [{ html: `V &minus; lw`, miss: "l and w multiply h, so divide by lw — don't subtract." }, { html: fracHTML("lw", "V"), miss: "Inverted — divide V by lw." }, fracHTML("V", "lwh")] }),
+      () => ({ stem: "Solve I = Prt for r", correct: fracHTML("I", "Pt"),
+        ds: [{ html: fracHTML("I", "P"), miss: "Both P and t multiply r — divide by Pt, not just P." }, { html: fracHTML("Pt", "I"), miss: "Inverted — divide I by Pt." }, { html: `I &minus; Pt`, miss: "Pt multiplies r, so divide." }] }),
+      () => ({ stem: "Solve C = 2πr for r", correct: fracHTML("C", "2π"),
+        ds: [{ html: fracHTML("C", "π"), miss: "Don't drop the 2 — divide by the whole 2π." }, { html: fracHTML("2π", "C"), miss: "Inverted — divide C by 2π." }, { html: `C &minus; 2π`, miss: "2π multiplies r, so divide." }] }),
+      () => ({ stem: "Solve v = u + at for t", correct: fracHTML(`v &minus; u`, "a"),
+        ds: [{ html: fracHTML("v", "a"), miss: "Subtract u from v first, then divide by a." }, { html: `a(v &minus; u)`, miss: "a multiplies t, so divide by a — don't multiply." }, { html: fracHTML(`v + u`, "a"), miss: "Move +u across as −u." }] }),
+      () => ({ stem: "Solve ax + c = d for x", correct: fracHTML(`d &minus; c`, "a"),
+        ds: [{ html: fracHTML("d", "a"), miss: "Subtract c first, then divide by a." }, { html: fracHTML(`d + c`, "a"), miss: "Move +c across as −c." }, { html: `a(d &minus; c)`, miss: "a multiplies x, so divide by a." }] }),
+      () => ({ stem: `Solve K = ½mv${sup(2)} for m`, correct: fracHTML("2K", `v${sup(2)}`),
+        ds: [{ html: fracHTML("K", `2v${sup(2)}`), miss: "Multiply by 2 first — the 2 goes on top." }, { html: fracHTML("2K", "v"), miss: "It's v², not v — divide by v²." }, { html: fracHTML("K", `v${sup(2)}`), miss: "Clear the ½ by multiplying both sides by 2." }] })
     ];
-    const pool = diff <= 1 ? [forms[0], forms[2], forms[4]] : forms;
+    const pool = diff <= 1 ? forms.slice(0, 7) : forms;
     const f = rng.pick(pool)();
     return mcProblem({
       stem: f.stem,
