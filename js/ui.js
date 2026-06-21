@@ -169,10 +169,16 @@
       h("div", { class: "rit-note", html: "A <b>practice-based proxy</b> from a Rasch model (the same family NWEA uses), not an official score. Honestly: a real 30-day RIT change is small and within measurement noise (±3) — trust the <b>mastery</b> numbers as the real signal." })
     ]);
 
+    const hasWeak = E.weakSkills(1).length > 0;
     const tools = h("div", { class: "grid cols-3" }, [
       miniBtn("📘 Reference & mnemonics", () => go("reference")),
       miniBtn("📈 Progress & charts", () => go("progress")),
-      st.errors.length ? miniBtn("🔁 Review " + st.errors.length + " missed", () => Session.start({ mode: "errors" })) : miniBtn("⚙️ Settings", () => go("settings"))
+      hasWeak ? miniBtn("🎯 Drill weak spots", () => Session.start({ mode: "focus" }))
+        : (st.errors.length ? miniBtn("🔁 Review " + st.errors.length + " missed", () => Session.start({ mode: "errors" })) : miniBtn("⚙️ Settings", () => go("settings")))
+    ]);
+    const calBtn = h("button", { class: "cta secondary", onclick: () => Session.start({ mode: "calibrate" }) }, [
+      h("div", { class: "big", style: "font-size:15px", html: "🎯 Quick skill check (~5 min)" }),
+      h("div", { class: "small", text: "No teaching — just finds which skills to drill. Missing some is expected and useful." })
     ]);
 
     mount(h("div", {}, [
@@ -187,6 +193,7 @@
         ])
       ]),
       cta,
+      calBtn,
       ritCard,
       stats,
       h("div", { style: "height:14px" }),
@@ -206,8 +213,13 @@
       this.theta = E.estimateAbility().theta;
       if (this.mode === "errors") {
         const errs = APP.store.state.errors.slice(-12);
-        this.queue = errs.map(e => ({ skillId: e.skillId, domain: APP.skillById[e.skillId].domain, kind: "relearn", isNew: false, needsLearn: false, seed: e.seed }));
+        this.queue = errs.map(e => ({ skillId: e.skillId, domain: APP.skillById[e.skillId].domain, kind: "relearn", isNew: false, needsLearn: false, seed: e.seed, diff: e.diff }));
         if (!this.queue.length) { renderHome(); return; }
+      } else if (this.mode === "focus") {
+        this.queue = E.buildFocusSession(12);
+        if (!this.queue.length) { this.mode = "normal"; this.queue = E.buildSession(); }
+      } else if (this.mode === "calibrate") {
+        this.queue = E.buildCalibration(14);
       } else {
         this.queue = E.buildSession();
       }
@@ -250,10 +262,11 @@
     },
     renderProblem() {
       const p = this.current.problem, sk = p.skill;
-      const hard = sk.rit >= this.theta + 3 || !!p.verify;
+      const hard = sk.rit >= this.theta + 3 || p.diff >= 3 || !!p.verify;
       const head = h("div", { class: "qhead" }, [
         h("span", { html: `<span class="chip" style="background:${dnames()[sk.domain].color}">${dnames()[sk.domain].name}</span>` }),
-        h("span", { class: "skill", text: sk.name })
+        h("span", { class: "skill", text: sk.name }),
+        p.diff >= 3 ? h("span", { class: "diffpill", text: "stretch" }) : null
       ]);
       const stem = h("div", { class: "stem", html: p.stem });
       const body = h("div", { class: "qcard" }, [head]);
@@ -292,12 +305,14 @@
       if (this.answered) return;
       const raw = this.current.input.value;
       if (!raw.trim()) { this.current.input.focus(); return; }
+      this.current.userRaw = raw;
       const correct = !!this.current.problem.check(raw);
       this.finishAnswer(correct);
     },
     submitMC(i) {
       if (this.answered) return;
       const p = this.current.problem;
+      this.current.userIdx = i;
       const correct = !!p.check(null, i);
       // colorize choices
       const btns = this.current.answerArea.querySelectorAll(".choice");
@@ -316,7 +331,7 @@
       if (item.isNew && this.results.learnedIds.indexOf(item.skillId) < 0) { this.results.newLearned++; this.results.learnedIds.push(item.skillId); }
       if (res.slip) this.results.slips++;
       // successive relearning: requeue a fresh instance of a missed skill
-      if (res.requeue && this.mode !== "errors") {
+      if (res.requeue && this.mode !== "errors" && this.mode !== "calibrate") {
         const insertAt = Math.min(this.queue.length, this.idx + 3);
         this.queue.splice(insertAt, 0, { skillId: item.skillId, domain: item.domain, kind: "relearn", isNew: false, needsLearn: false, seed: U.newSeed() });
       }
@@ -327,6 +342,11 @@
       const fb = h("div", { class: "fb " + (correct ? "ok" : "no") });
       fb.appendChild(h("div", { class: "verdict", html: correct ? "✓ Correct" + (ms < 9000 && !this.current.usedHelp ? " — fast & clean" : "") : "✗ Not quite" }));
       if (!correct) fb.appendChild(h("div", { class: "ans", html: "Answer: <b>" + p.answerHTML + "</b>" + (res.slip ? ' <span class="muted">— looks like a careless slip; slow down and verify next time.</span>' : "") }));
+      // misconception-targeted feedback: name the SPECIFIC mistake, not just "wrong"
+      if (!correct && p.diagnose) {
+        const miss = p.diagnose(this.current.userRaw, this.current.userIdx);
+        if (miss) fb.appendChild(h("div", { class: "miss", html: "🔎 <b>Here's the mistake:</b> " + miss }));
+      }
       const sol = h("div", { class: "sol" }, (p.solution || []).map(s => h("div", { class: "step", html: s })));
       fb.appendChild(sol);
       if (p.verify) fb.appendChild(h("div", { class: "mnem", html: "✓ Check: " + p.verify }));
@@ -451,6 +471,22 @@
           ]);
         })
       ]),
+      (function () {
+        const weak = E.weakSkills(6);
+        if (!weak.length) return null;
+        return h("div", { class: "card" }, [
+          h("h2", { class: "section", style: "margin-top:0", text: "Focus areas — your weakest skills" }),
+          h("div", { class: "muted", style: "font-size:13.5px;margin-bottom:10px", html: "Your highest-leverage skills to drill — half-learned, not yet locked in. This is where your next RIT points are hiding." }),
+          ...weak.map(s => {
+            const r = st.skills[s.id]; const a = r.attempts ? Math.round(100 * r.correct / r.attempts) : 0;
+            return h("div", { class: "focus-skill" }, [
+              h("span", { html: `<span class="chip" style="background:${dnames()[s.domain].color};font-size:10px">${dnames()[s.domain].name}</span>&nbsp; ${s.name}` }),
+              h("span", { class: "acc", text: a + "% · " + r.attempts + " tries" })
+            ]);
+          }),
+          h("button", { class: "btn", style: "margin-top:14px", onclick: () => Session.start({ mode: "focus" }) }, "🎯 Drill these weak spots")
+        ]);
+      })(),
       h("div", { class: "card" }, [
         h("h2", { class: "section", style: "margin-top:0", text: "Practice calendar (last 10 weeks)" }),
         heatmap(st.daily),

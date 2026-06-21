@@ -26,10 +26,12 @@ for (const sk of APP.skills) {
   check(!!APP.domains[sk.domain], `skill ${sk.id}: unknown domain ${sk.domain}`);
   check(sk.teach && stemHas(sk.teach.idea), `skill ${sk.id}: missing teach.idea`);
   let okCorrect = 0, okWrong = 0, errs = 0, mcBad = 0, n = 0;
+  let diagThrew = 0;
   for (let i = 0; i < ITER; i++) {
     const rng = APP.util.makeRng(APP.util.newSeed());
+    const diff = 1 + (i % 3); // exercise easy/medium/hard for difficulty-aware generators
     let p;
-    try { p = sk.gen(rng); } catch (e) { errs++; if (errs <= 2) fails.push(`${sk.id} threw: ${e.message}`); continue; }
+    try { p = sk.gen(rng, diff); } catch (e) { errs++; if (errs <= 2) fails.push(`${sk.id} threw: ${e.message}`); continue; }
     n++;
     if (!stemHas(p.stem)) { fails.push(`${sk.id}: empty stem`); fail++; }
     if (!Array.isArray(p.solution) || p.solution.length === 0) { fails.push(`${sk.id}: empty solution`); fail++; }
@@ -39,11 +41,14 @@ for (const sk of APP.skills) {
       if (p.check(null, t.idx) === true) okCorrect++;
       const wrongIdx = (t.idx + 1) % t.nchoices;
       if (p.check(null, wrongIdx) === false) okWrong++;
+      if (p.diagnose) { try { p.diagnose(null, wrongIdx); } catch (e) { diagThrew++; } }
     } else {
       if (p._test && p.check(p._test.raw) === true) okCorrect++;
       if (p._test && p.check(p._test.bad) === false) okWrong++;
+      if (p.diagnose) { try { p.diagnose(p._test.bad); } catch (e) { diagThrew++; } }
     }
   }
+  check(diagThrew === 0, `skill ${sk.id}: diagnose() threw ${diagThrew} times`);
   check(errs === 0, `skill ${sk.id}: ${errs} generator exceptions`);
   check(mcBad === 0, `skill ${sk.id}: ${mcBad} MC problems with bad choice counts`);
   check(okCorrect === n, `skill ${sk.id}: correct-answer accepted ${okCorrect}/${n}`);

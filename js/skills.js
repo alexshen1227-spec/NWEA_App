@@ -24,12 +24,30 @@
   };
 
   // ----- helpers -----
+  // distractors: array of strings OR { html, miss } where miss = a targeted
+  // explanation of the misconception that produces that wrong choice.
   function mkMC(rng, correctHTML, distractors) {
     const seen = new Set([correctHTML]);
     const ds = [];
-    for (const d of distractors) { if (!seen.has(d)) { seen.add(d); ds.push(d); } }
-    let choices = [{ html: correctHTML, ok: true }].concat(ds.slice(0, 3).map(h => ({ html: h, ok: false })));
+    for (const d of distractors) {
+      const html = typeof d === "string" ? d : (d && d.html);
+      const miss = (d && typeof d === "object") ? (d.miss || null) : null;
+      if (!html || seen.has(html)) continue;
+      seen.add(html); ds.push({ html, ok: false, miss });
+    }
+    let choices = [{ html: correctHTML, ok: true, miss: null }].concat(ds.slice(0, 3));
     return rng.shuffle(choices);
+  }
+  // o.misses (optional): [{ near: value, tol?, msg } | { when: (v)=>bool, msg }]
+  // diagnose(raw) returns a targeted explanation if the wrong answer matches a
+  // known mistake, else o.miss, else null.
+  function numMisses(o, raw) {
+    const v = parseNum(raw); if (isNaN(v)) return o.miss || null;
+    for (const m of (o.misses || [])) {
+      if (m.when && m.when(v)) return m.msg;
+      if (m.near != null && approxEq(v, m.near, m.tol == null ? (o.tol == null ? 0.01 : o.tol) : m.tol)) return m.msg;
+    }
+    return o.miss || null;
   }
   function numProblem(o) {
     return {
@@ -37,7 +55,8 @@
       input: { kind: "number", placeholder: o.placeholder || "answer", suffix: o.suffix || "" },
       answerHTML: o.answerHTML, solution: o.solution, hint: o.hint || null, verify: o.verify || null,
       _test: { raw: String(o.answer), bad: String(o.answer + 9.123) },
-      check: (raw) => approxEq(parseNum(raw), o.answer, o.tol == null ? 0.01 : o.tol)
+      check: (raw) => approxEq(parseNum(raw), o.answer, o.tol == null ? 0.01 : o.tol),
+      diagnose: (raw) => numMisses(o, raw)
     };
   }
   function listProblem(o) {
@@ -50,7 +69,8 @@
         const got = parseNumList(raw); const tol = o.tol == null ? 0.03 : o.tol;
         if (o.ordered) return o.targets.every((t, i) => got[i] != null && approxEq(got[i], t, tol));
         return got.length >= o.targets.length && o.targets.every(t => got.some(v => approxEq(v, t, tol)));
-      }
+      },
+      diagnose: (raw) => { const got = parseNumList(raw); for (const m of (o.misses || [])) { if (m.when && m.when(got)) return m.msg; } return o.miss || null; }
     };
   }
   function mcProblem(o, choices) {
@@ -60,11 +80,15 @@
       answerHTML: o.answerHTML || (choices.find(c => c.ok) || {}).html,
       solution: o.solution, hint: o.hint || null, verify: o.verify || null,
       _test: { idx: choices.findIndex(c => c.ok), nchoices: choices.length, nok: choices.filter(c => c.ok).length },
-      check: (raw, idx) => !!(choices[idx] && choices[idx].ok)
+      check: (raw, idx) => !!(choices[idx] && choices[idx].ok),
+      diagnose: (raw, idx) => (choices[idx] && !choices[idx].ok && choices[idx].miss) ? choices[idx].miss : (o.miss || null)
     };
   }
   const pm = (n) => (n < 0 ? "&minus; " + Math.abs(n) : "+ " + n);   // " + 3" / " − 3"
   const neg = (n) => (n < 0 ? "&minus;" + Math.abs(n) : "" + n);
+  // pick a value by difficulty level (1=easy, 2=medium, 3=hard). Generators
+  // accept an optional 2nd arg gen(rng, diff); legacy generators ignore it.
+  const D = (diff, easy, med, hard) => (diff <= 1 ? easy : (diff >= 3 ? hard : med));
 
   // small right-triangle / shape SVG helpers
   function svgRight(aLabel, bLabel, cLabel) {
@@ -527,7 +551,9 @@
         const c = rng.int(1, 8); const correct = `Domain: x ≥ ${c}`;
         return mcProblem({ stem: `Domain of&nbsp; y = ${sqrtHTML("x &minus; " + c)} ?`,
           solution: [`Need x − ${c} ≥ 0`, `<b>x ≥ ${c}</b>`] },
-          mkMC(rng, correct, [`Domain: x ≤ ${c}`, `Domain: x > ${c}`, `All real numbers`]));
+          mkMC(rng, correct, [
+            { html: `Domain: x ≤ ${c}`, miss: "Flipped — the inside of a square root must be ≥ 0, so x − c ≥ 0 gives x ≥ c." },
+            `Domain: x > ${c}`, `All real numbers`]));
       } else if (type === "rational") {
         const c = rng.nonzero(-6, 6); const correct = `All reals except x = ${c}`;
         return mcProblem({ stem: `Domain of&nbsp; y = ${fracHTML(1, "x " + pm(-c))} ?`,
@@ -648,7 +674,10 @@
       return mcProblem({
         stem: `Find the inverse of&nbsp; f(x) = ${lin(a, b)}.`,
         solution: [`Swap: x = ${a}y ${pm(b)}`, `Solve: y = (x ${pm(-b)})/${a}`, `<b>${correct}</b>`]
-      }, mkMC(rng, correct, [`f⁻¹(x) = (x ${pm(b)}) / ${a}`, `f⁻¹(x) = ${a}x ${pm(-b)}`, `f⁻¹(x) = (x ${pm(-b)}) · ${a}`]));
+      }, mkMC(rng, correct, [
+        { html: `f⁻¹(x) = (x ${pm(b)}) / ${a}`, miss: "Sign error — after swapping x and y, move b across the equals sign, which flips its sign before you divide." },
+        { html: `f⁻¹(x) = ${a}x ${pm(-b)}`, miss: "That's not an inverse — you must swap x and y and solve for y (divide by a), not reuse the original." },
+        `f⁻¹(x) = (x ${pm(-b)}) · ${a}`]));
     }
   });
 
@@ -828,7 +857,10 @@
       return mcProblem({
         stem: `Identify the center and radius:&nbsp; (x ${pm(-h)})² + (y ${pm(-k)})² = ${r * r}`,
         solution: [`Center is (h, k) with signs flipped: (${h}, ${k})`, `r = √${r * r} = ${r}`, `<b>${correct}</b>`]
-      }, mkMC(rng, correct, [`Center (${-h}, ${-k}), r = ${r}`, `Center (${h}, ${k}), r = ${r * r}`, `Center (${-h}, ${-k}), r = ${r * r}`]));
+      }, mkMC(rng, correct, [
+        { html: `Center (${-h}, ${-k}), r = ${r}`, miss: "Sign flip: in (x − h)², the center's x-value is +h — read the OPPOSITE sign of what's in the parentheses." },
+        { html: `Center (${h}, ${k}), r = ${r * r}`, miss: "That's r², not r — the right side is r², so take its square root for the radius." },
+        `Center (${-h}, ${-k}), r = ${r * r}`]));
     }
   });
 
@@ -894,7 +926,10 @@
       return mcProblem({
         stem: `The point (${x}, ${y}) is ${t.d}. What is the image?`,
         solution: [`Apply the rule for “${t.d}”`, `<b>${correct}</b>`]
-      }, mkMC(rng, correct, [`(${t.f[1]}, ${t.f[0]})`, `(${-t.f[0]}, ${t.f[1]})`, `(${x}, ${y})`]));
+      }, mkMC(rng, correct, [
+        { html: `(${t.f[1]}, ${t.f[0]})`, miss: "You swapped the x and y of the answer — apply the rule to the coordinates in order." },
+        `(${-t.f[0]}, ${t.f[1]})`,
+        { html: `(${x}, ${y})`, miss: "That's the original point unchanged — the transformation does move it." }]));
     }
   });
 
@@ -1140,6 +1175,1365 @@
 
   // subscript helper for sequence terms
   function sub(n) { return `<sub>${n}</sub>`; }
+
+  // ===================================================================
+  // AUTHORED SKILLS (overnight expansion) — 38 new generators
+  // ===================================================================
+S.push({
+  id: "sys-substitution", name: "Systems by substitution", domain: "algebra", rit: 262, tag: "A-REI.6",
+  teach: {
+    idea: "When one equation gives y (or x) alone, substitute that expression into the other equation, solve for one variable, then back-substitute.",
+    mnemonic: "Isolate, substitute, solve, back-substitute.",
+    example: { stem: "y = 2x − 1, &nbsp; 3x + y = 9", steps: ["3x + (2x − 1) = 9", "5x = 10, so x = 2", "y = 2(2) − 1 = <b>3</b> → (2, 3)"] }
+  },
+  gen(rng, diff) {
+    const x = rng.int(D(diff,-4,-6,-8), D(diff,4,6,8));
+    const m = rng.nonzero(D(diff,-3,-4,-5), D(diff,3,4,5));
+    const b = rng.int(D(diff,-5,-7,-9), D(diff,5,7,9));
+    const y = m*x + b;
+    let A = rng.nonzero(2, D(diff,4,5,6));
+    let B = rng.nonzero(1, D(diff,3,4,5));
+    const C = A*x + B*y;
+    return listProblem({
+      stem: `Solve by substitution (give x, y):<br>y = ${lin(m,b)}<br>${poly([{c:A,v:"x"},{c:B,v:"y"}])} = ${C}`,
+      targets: [x, y], ordered: true, placeholder: "x, y",
+      answerHTML: `x = ${x},&nbsp; y = ${y}`,
+      solution: [
+        `Substitute: ${A}x ${B<0?"&minus; "+Math.abs(B):"+ "+B}(${lin(m,b)}) = ${C}`,
+        `${A+B*m}x ${pm(B*b)} = ${C}, so x = <b>${x}</b>`,
+        `y = ${m}(${x}) ${pm(b)} = <b>${y}</b>`
+      ],
+      misses: [
+        { when:(g)=> g.length>=2 && approxEq(g[0],y) && approxEq(g[1],x), msg: "You swapped x and y — report x first, then y." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "abs-ineq-compound", name: "Absolute value inequalities", domain: "algebra", rit: 264, tag: "A-REI.3",
+  teach: {
+    idea: "|x + b| &lt; c (c &gt; 0) becomes the compound −c &lt; x + b &lt; c. |x + b| &gt; c becomes x + b &lt; −c OR x + b &gt; c.",
+    mnemonic: "&lt; is AND (between); &gt; is OR (outside).",
+    example: { stem: "|x − 1| &lt; 4", steps: ["−4 &lt; x − 1 &lt; 4", "add 1: −3 &lt; x &lt; 5", "<b>−3 &lt; x &lt; 5</b>"] }
+  },
+  gen(rng, diff) {
+    const less = rng.bool();
+    const b = rng.nonzero(D(diff,-4,-6,-9), D(diff,4,6,9));
+    const c = rng.int(D(diff,2,4,6), D(diff,6,9,12));
+    const bStr = b < 0 ? `&minus; ${Math.abs(b)}` : `+ ${b}`;
+    const lo = -c - b, hi = c - b;
+    let correct, sol;
+    if (less) {
+      correct = `${lo} &lt; x &lt; ${hi}`;
+      sol = [`&minus;${c} &lt; x ${bStr} &lt; ${c}`, `subtract ${b<0?`(${b})`:b}: <b>${lo} &lt; x &lt; ${hi}</b>`];
+    } else {
+      correct = `x &lt; ${lo} or x &gt; ${hi}`;
+      sol = [`x ${bStr} &lt; &minus;${c} or x ${bStr} &gt; ${c}`, `<b>x &lt; ${lo} or x &gt; ${hi}</b>`];
+    }
+    const dA = less
+      ? `x &lt; ${lo} or x &gt; ${hi}`
+      : `${lo} &lt; x &lt; ${hi}`;
+    const dB = less
+      ? `${-c+b} &lt; x &lt; ${c+b}`
+      : `x &lt; ${-c+b} or x &gt; ${c+b}`;
+    const dC = less
+      ? `${lo-1} &lt; x &lt; ${hi+1}`
+      : `x &lt; ${lo-1} or x &gt; ${hi+1}`;
+    return mcProblem({
+      stem: `Solve: |x ${bStr}| ${less ? "&lt;" : "&gt;"} ${c}`,
+      solution: sol
+    }, mkMC(rng, correct, [
+      { html: dA, miss: less ? "&lt; gives an AND (between), not an OR." : "&gt; gives an OR (outside), not a between." },
+      { html: dB, miss: "Sign error moving the constant: subtract b from both sides, not add." },
+      dC
+    ]));
+  }
+});
+
+S.push({
+  id: "compound-ineq", name: "Compound inequalities (and/or)", domain: "algebra", rit: 261, tag: "A-REI.3",
+  teach: {
+    idea: "A three-part inequality a &lt; mx + b &lt; c is solved by doing the same operation to all three parts. Dividing by a negative flips both inequality signs.",
+    mnemonic: "Same move to all three; flip if you divide by a negative.",
+    example: { stem: "−6 &lt; 2x + 2 &lt; 10", steps: ["subtract 2: −8 &lt; 2x &lt; 8", "÷2: <b>−4 &lt; x &lt; 4</b>"] }
+  },
+  gen(rng, diff) {
+    const m = rng.int(2, D(diff,3,4,5));
+    const b = rng.int(D(diff,-4,-6,-8), D(diff,4,6,8));
+    const xlo = rng.int(D(diff,-6,-8,-10), -1);
+    const xhi = xlo + rng.int(2, D(diff,4,6,8));
+    const a = m*xlo + b, c = m*xhi + b;
+    const correct = `${xlo} &lt; x &lt; ${xhi}`;
+    const dA = `${a-b} &lt; x &lt; ${c-b}`;
+    return mcProblem({
+      stem: `Solve: ${a} &lt; ${lin(m,b)} &lt; ${c}`,
+      solution: [
+        `Subtract ${b<0?`(${b})`:b}: ${a-b} &lt; ${m}x &lt; ${c-b}`,
+        `Divide by ${m}: <b>${xlo} &lt; x &lt; ${xhi}</b>`
+      ]
+    }, mkMC(rng, correct, [
+      { html: dA, miss: `You subtracted b but forgot to divide all parts by ${m}.` },
+      { html: `${-xhi} &lt; x &lt; ${-xlo}`, miss: "Sign of the bounds is flipped — only flip when dividing by a negative." },
+      { html: `x &lt; ${xlo} or x &gt; ${xhi}`, miss: "A between (AND) inequality, not an OR." }
+    ]));
+  }
+});
+
+S.push({
+  id: "literal-equations", name: "Literal equations (solve for a variable)", domain: "algebra", rit: 263, tag: "A-CED.4",
+  teach: {
+    idea: "To solve a formula for one letter, treat every other letter as a number and undo operations in reverse order until that letter is alone.",
+    mnemonic: "Same algebra, the other letters just ride along.",
+    example: { stem: "Solve A = ½bh for h", steps: ["multiply by 2: 2A = bh", "divide by b: <b>h = 2A / b</b>"] }
+  },
+  gen(rng, diff) {
+    const forms = [
+      () => ({
+        stem: "Solve d = rt for t",
+        correct: fracHTML("d","r"),
+        ds: [
+          { html: fracHTML("r","d"), miss: "You inverted the fraction — divide d by r, not r by d." },
+          { html: `d &minus; r`, miss: "r is multiplied by t, so divide by r — don't subtract." },
+          fracHTML("d","rt")
+        ]
+      }),
+      () => ({
+        stem: "Solve P = 2l + 2w for w",
+        correct: fracHTML(`P &minus; 2l`,"2"),
+        ds: [
+          { html: fracHTML("P","2"), miss: "Subtract 2l from P first, then divide by 2." },
+          { html: fracHTML(`P &minus; 2l`,"4"), miss: "Divide by 2, not 4." },
+          { html: `P &minus; 2l &minus; 2`, miss: "The 2 is a coefficient (divide), not a term to subtract." }
+        ]
+      }),
+      () => ({
+        stem: "Solve A = ½bh for h",
+        correct: fracHTML("2A","b"),
+        ds: [
+          { html: fracHTML("A","2b"), miss: "Multiply both sides by 2 first; that puts 2 in the numerator." },
+          { html: fracHTML("A","b"), miss: "You dropped the factor of 2 — multiply by 2 to clear the ½." },
+          { html: fracHTML("2A","bh"), miss: "Solve for h — h can't remain on the right." }
+        ]
+      }),
+      () => ({
+        stem: "Solve y = mx + b for x",
+        correct: fracHTML(`y &minus; b`,"m"),
+        ds: [
+          { html: fracHTML("y","m"), miss: "Subtract b from y before dividing by m." },
+          { html: `m(y &minus; b)`, miss: "m is multiplied by x, so divide by m — don't multiply." },
+          { html: fracHTML(`y + b`,"m"), miss: "Move +b to the other side as −b." }
+        ]
+      }),
+      () => ({
+        stem: "Solve V = lwh for h",
+        correct: fracHTML("V","lw"),
+        ds: [
+          { html: `V &minus; lw`, miss: "l and w multiply h, so divide by lw — don't subtract." },
+          { html: fracHTML("lw","V"), miss: "You inverted it — divide V by lw." },
+          { html: fracHTML("V","lwh"), miss: "Solve for h — it can't stay in the denominator." }
+        ]
+      })
+    ];
+    const pool = diff <= 1 ? [forms[0], forms[2], forms[4]] : forms;
+    const f = rng.pick(pool)();
+    return mcProblem({
+      stem: f.stem,
+      solution: [`Isolate the target variable by undoing operations in reverse.`, `Result: <b>${f.correct}</b>`]
+    }, mkMC(rng, f.correct, f.ds));
+  }
+});
+
+S.push({
+  id: "quad-square-roots", name: "Quadratics by square roots", domain: "algebra", rit: 260, tag: "A-REI.4",
+  teach: {
+    idea: "If x² = k (k ≥ 0), then x = ±√k. For (x − h)² = k, take the square root of both sides and add h: x = h ± √k. Remember BOTH signs.",
+    mnemonic: "Square root both sides — and don't forget the ±.",
+    example: { stem: "(x − 3)² = 16", steps: ["x − 3 = ±4", "x = 3 ± 4", "x = 7 or <b>x = −1</b>"] }
+  },
+  gen(rng, diff) {
+    const r = rng.int(D(diff,2,3,4), D(diff,6,8,11));
+    const k = r*r;
+    const h = diff <= 1 ? 0 : rng.int(D(diff,-3,-5,-7), D(diff,3,5,7));
+    const x1 = h + r, x2 = h - r;
+    const stem = h === 0
+      ? `Solve: x${sup(2)} = ${k}`
+      : `Solve: (x ${h<0?"+ "+Math.abs(h):"&minus; "+h})${sup(2)} = ${k}`;
+    return listProblem({
+      stem,
+      targets: [x1, x2], placeholder: "both values",
+      answerHTML: `x = ${x1} or x = ${x2}`,
+      solution: h === 0
+        ? [`x = ±${sqrtHTML(k)} = ±${r}`, `x = ${x1} or <b>x = ${x2}</b>`]
+        : [`x ${h<0?"+ "+Math.abs(h):"&minus; "+h} = ±${r}`, `x = ${h} ± ${r}`, `x = ${x1} or <b>x = ${x2}</b>`],
+      misses: [
+        { when:(g)=> g.length===1, msg: "There are two solutions (±) — give both." },
+        { when:(g)=> g.length>=1 && g.every(v=> v>=0) && (x2<0||x1<0), msg: "Don't drop the negative root — square root gives ±." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "factor-lead-coef", name: "Factor with a ≠ 1 (MC)", domain: "algebra", rit: 266, tag: "A-SSE.3",
+  teach: {
+    idea: "To factor ax² + bx + c (a ≠ 1), find two numbers that multiply to a·c and add to b, split the middle term, then factor by grouping.",
+    mnemonic: "Multiply to a·c, add to b, split, group.",
+    example: { stem: "Factor 2x² + 7x + 3", steps: ["a·c = 6, need +1 and +6", "2x² + x + 6x + 3", "x(2x + 1) + 3(2x + 1)", "<b>(2x + 1)(x + 3)</b>"] }
+  },
+  gen(rng, diff) {
+    const p = rng.int(2, D(diff,2,3,4));
+    const r = rng.int(1, D(diff,2,3,3));
+    const q = rng.nonzero(D(diff,-3,-4,-6), D(diff,3,4,6));
+    let s = rng.nonzero(D(diff,-3,-4,-6), D(diff,3,4,6));
+    const a = p*r, b = p*s + r*q, c = q*s;
+    const fac = (P,Q,R,Sx) => `(${poly([{c:P,v:"x"},{c:Q,v:""}])})(${poly([{c:R,v:"x"},{c:Sx,v:""}])})`;
+    const correct = fac(p,q,r,s);
+    const dA = fac(p,-q,r,s);
+    const dB = fac(p,q,r,-s);
+    const dC = fac(p,-q,r,-s);
+    return mcProblem({
+      stem: `Factor completely: ${quad(a,b,c)}`,
+      solution: [
+        `a·c = ${a*c}; need two numbers with product ${a*c} and sum ${b}: ${r*q} and ${p*s}`,
+        `Split and group → <b>${correct}</b>`
+      ]
+    }, mkMC(rng, correct, [
+      { html: dA, miss: "Check the signs — expand to confirm the middle term matches b." },
+      { html: dC, miss: "Both signs are wrong: this gives the opposite middle term (−b)." },
+      { html: dB, miss: "Check the sign of the second constant — expand to verify the middle term." }
+    ]));
+  }
+});
+
+  // ----------------------------------------------------------------
+
+S.push({
+  id: "word-linear-eq", name: "Linear equation word problems", domain: "algebra", rit: 258, tag: "A-CED.1",
+  teach: {
+    idea: "Translate the words into one linear equation, then solve. 'Per' or 'each' signals the rate (the coefficient); a one-time amount is the constant.",
+    mnemonic: "Rate · count + fixed = total.",
+    example: { stem: "A gym charges a $30 fee plus $8 per visit. A member paid $94. How many visits?", steps: ["30 + 8v = 94", "8v = 64", "v = <b>8</b>"] }
+  },
+  gen(rng, diff) {
+    const rate = rng.int(D(diff, 4, 6, 7), D(diff, 8, 11, 15));
+    const fixed = rng.int(D(diff, 10, 15, 20), D(diff, 30, 45, 70));
+    const count = rng.int(D(diff, 4, 6, 8), D(diff, 9, 13, 18));
+    const total = fixed + rate * count;
+    const ctx = rng.pick([
+      { who: "A gym", verb: "charges", unit: "visit", q: "visits" },
+      { who: "A plumber", verb: "charges", unit: "hour", q: "hours" },
+      { who: "A car rental", verb: "costs", unit: "day", q: "days" }
+    ]);
+    return numProblem({
+      stem: `${ctx.who} ${ctx.verb} a $${fixed} fee plus $${rate} per ${ctx.unit}. The total bill was $${total}. How many ${ctx.q}?`,
+      answer: count, answerHTML: `${count} ${ctx.q}`,
+      solution: [`${fixed} + ${rate}n = ${total}`, `${rate}n = ${total - fixed}`, `n = <b>${count}</b>`],
+      misses: [
+        { near: total / rate, msg: "You divided the total by the rate without first subtracting the fixed fee." },
+        { near: total - fixed, msg: "You subtracted the fee but forgot to divide by the per-unit rate." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "word-system-eq", name: "System word problems (coins / two unknowns)", domain: "algebra", rit: 264, tag: "A-REI.6",
+  teach: {
+    idea: "Two unknowns need two equations: one for the total count, one for the total value (or a second relationship). Solve by substitution or elimination.",
+    mnemonic: "Count equation + value equation.",
+    example: { stem: "30 coins (nickels & dimes) worth $2.30. How many dimes?", steps: ["n + d = 30, 5n + 10d = 230", "5(30−d)+10d=230 → 5d=80", "d = <b>16</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(["coins", "tickets"]);
+    if (mode === "coins") {
+      const total = rng.int(D(diff, 12, 18, 25), D(diff, 20, 30, 45));
+      const dimes = rng.int(3, total - 3);
+      const nickels = total - dimes;
+      const value = 5 * nickels + 10 * dimes; // cents
+      return numProblem({
+        stem: `A jar has ${total} coins made of nickels and dimes worth $${(value/100).toFixed(2)} in total. How many dimes are there?`,
+        answer: dimes, answerHTML: `${dimes} dimes`,
+        solution: [`n + d = ${total}, &nbsp; 5n + 10d = ${value}`, `5(${total}−d) + 10d = ${value} → 5d = ${value - 5*total}`, `d = <b>${dimes}</b>`],
+        misses: [
+          { near: nickels, msg: "That's the number of nickels — the question asks for dimes." },
+          { near: total / 2, msg: "You assumed an even split; use the value equation to find the exact count." }
+        ]
+      });
+    } else {
+      const adultP = rng.int(D(diff, 7, 9, 11), D(diff, 9, 12, 15));
+      const kidP = rng.int(3, adultP - 2);
+      const adults = rng.int(D(diff, 4, 6, 8), D(diff, 9, 13, 18));
+      const kids = rng.int(D(diff, 4, 6, 8), D(diff, 9, 13, 18));
+      const tickets = adults + kids;
+      const money = adultP * adults + kidP * kids;
+      return numProblem({
+        stem: `${tickets} tickets were sold for a total of $${money}. Adult tickets cost $${adultP} and child tickets cost $${kidP}. How many adult tickets were sold?`,
+        answer: adults, answerHTML: `${adults} adult tickets`,
+        solution: [`a + c = ${tickets}, &nbsp; ${adultP}a + ${kidP}c = ${money}`, `${adultP}a + ${kidP}(${tickets}−a) = ${money}`, `a = <b>${adults}</b>`],
+        misses: [
+          { near: kids, msg: "That's the number of child tickets — the question asks for adult tickets." }
+        ]
+      });
+    }
+  }
+});
+
+S.push({
+  id: "word-exp-decay", name: "Growth / decay & compound interest", domain: "algebra", rit: 268, tag: "F-LE.5",
+  teach: {
+    idea: "Repeated percent change uses a multiplier: grow by r% → ×(1+r/100); decay by r% → ×(1−r/100); over t periods raise it to the t power. Final = P·(multiplier)<sup>t</sup>.",
+    mnemonic: "Start × (1 ± rate)^time.",
+    example: { stem: "$500 at 4% interest compounded yearly for 3 years (round to cent).", steps: ["500·(1.04)³", "= 500·1.124864", "≈ <b>562.43</b>"] }
+  },
+  gen(rng, diff) {
+    const grow = rng.bool();
+    const P = rng.int(D(diff, 2, 4, 6), D(diff, 8, 12, 20)) * 100;
+    const r = rng.pick(grow ? [4, 5, 6, 8, 10] : [5, 10, 15, 20, 25]);
+    const t = rng.int(D(diff, 2, 3, 4), D(diff, 3, 4, 6));
+    const mult = grow ? (1 + r / 100) : (1 - r / 100);
+    const final = U.round(P * Math.pow(mult, t), 2);
+    const ctx = grow
+      ? `An investment of $${P} earns ${r}% interest compounded yearly. What is its value after ${t} years?`
+      : `A car worth $${P} loses ${r}% of its value each year. What is it worth after ${t} years?`;
+    const simple = grow ? U.round(P * (1 + r * t / 100), 2) : U.round(P * (1 - r * t / 100), 2);
+    return numProblem({
+      stem: `${ctx} (Round to the nearest cent.)`,
+      answer: final, answerHTML: `$${final.toFixed(2)}`, tol: 0.02,
+      solution: [`Multiplier = ${grow ? "1 + " : "1 − "}${r}/100 = ${mult}`, `${P} · (${mult})${sup(t)}`, `≈ <b>$${final.toFixed(2)}</b>`],
+      misses: [
+        { near: simple, tol: 0.5, msg: "You applied the percent only once (simple, linear) instead of compounding each year." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "word-unit-rate", name: "Proportional reasoning / unit rate", domain: "algebra", rit: 258, tag: "7.RP.A.2",
+  teach: {
+    idea: "Set up a proportion of equal rates: (part / whole) = (part / whole). Cross-multiply and solve. Keep matching units across from each other.",
+    mnemonic: "Cross-multiply: a/b = c/x → x = bc/a.",
+    example: { stem: "3 lb of apples cost $7.50. What do 8 lb cost?", steps: ["7.50/3 = x/8", "x = 8·2.50", "= <b>20</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(["price", "speed", "recipe"]);
+    if (mode === "price") {
+      const unit = rng.int(D(diff, 2, 3, 4), D(diff, 5, 7, 9));
+      const baseQty = rng.int(2, D(diff, 4, 6, 8));
+      const newQty = rng.int(D(diff, 5, 7, 9), D(diff, 10, 14, 20));
+      const baseCost = unit * baseQty;
+      const ans = unit * newQty;
+      return numProblem({
+        stem: `${baseQty} lb of coffee costs $${baseCost}. At the same rate, what is the cost of ${newQty} lb? (dollars)`,
+        answer: ans, answerHTML: `$${ans}`,
+        solution: [`Unit rate = ${baseCost}/${baseQty} = $${unit}/lb`, `${unit} · ${newQty}`, `= <b>$${ans}</b>`],
+        misses: [
+          { near: baseCost + (newQty - baseQty), msg: "You added the extra pounds instead of scaling by the unit rate." }
+        ]
+      });
+    } else if (mode === "speed") {
+      const speed = rng.int(D(diff, 30, 40, 45), D(diff, 55, 65, 75));
+      const hours = rng.int(D(diff, 2, 3, 4), D(diff, 4, 6, 8));
+      const dist = speed * hours;
+      return numProblem({
+        stem: `A car travels ${dist} miles in ${hours} hours at a constant speed. How far does it travel in 1 hour? (miles)`,
+        answer: speed, answerHTML: `${speed} miles`,
+        solution: [`Rate = distance / time`, `${dist} / ${hours}`, `= <b>${speed} miles/hour</b>`],
+        misses: [
+          { near: dist * hours, msg: "You multiplied distance by time instead of dividing." }
+        ]
+      });
+    } else {
+      const per = rng.int(2, D(diff, 3, 4, 5));
+      const baseCups = rng.int(2, D(diff, 3, 5, 6));
+      const scale = rng.int(D(diff, 2, 3, 4), D(diff, 4, 6, 8));
+      const baseFlour = per * baseCups;
+      const newCups = baseCups * scale;
+      const ans = per * newCups;
+      return numProblem({
+        stem: `A recipe uses ${baseFlour} cups of flour to make ${baseCups} loaves. How many cups of flour are needed for ${newCups} loaves?`,
+        answer: ans, answerHTML: `${ans} cups`,
+        solution: [`Flour per loaf = ${baseFlour}/${baseCups} = ${per}`, `${per} · ${newCups}`, `= <b>${ans} cups</b>`],
+        misses: [
+          { near: baseFlour + (newCups - baseCups), msg: "You added loaves instead of scaling by the per-loaf rate." }
+        ]
+      });
+    }
+  }
+});
+
+S.push({
+  id: "word-quad-app", name: "Quadratic applications (area / projectile)", domain: "algebra", rit: 266, tag: "A-CED.1",
+  teach: {
+    idea: "Area problems: set length·width = area with one side written in terms of the other, giving a quadratic. Projectile: h = −16t² + v·t + h₀; substitute and solve.",
+    mnemonic: "Build the quadratic, then solve for the positive root.",
+    example: { stem: "A rectangle is 3 m longer than it is wide and has area 40 m². Find the width.", steps: ["w(w+3)=40", "w²+3w−40=0 → (w+8)(w−5)=0", "w = <b>5</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(["area", "projectile"]);
+    if (mode === "area") {
+      const w = rng.int(D(diff, 4, 6, 7), D(diff, 8, 11, 15));
+      const extra = rng.int(D(diff, 2, 3, 4), D(diff, 4, 6, 8));
+      const area = w * (w + extra);
+      return numProblem({
+        stem: `A rectangular garden is ${extra} m longer than it is wide. Its area is ${area} m². Find its width (m).`,
+        answer: w, answerHTML: `${w} m`,
+        solution: [`w(w + ${extra}) = ${area}`, `w² + ${extra}w − ${area} = 0`, `w = <b>${w} m</b> (reject the negative root)`],
+        misses: [
+          { near: w + extra, msg: "That's the length — the question asks for the width." }
+        ]
+      });
+    } else {
+      const t = rng.int(D(diff, 1, 2, 2), D(diff, 2, 3, 4));
+      const v = 16 * rng.int(D(diff, 2, 3, 4), D(diff, 4, 5, 7));
+      const h0 = rng.int(D(diff, 0, 4, 6), D(diff, 6, 20, 40));
+      const h = -16 * t * t + v * t + h0;
+      return numProblem({
+        stem: `A ball is launched upward; its height is h = −16t² + ${v}t + ${h0} (feet, t in seconds). What is its height at t = ${t} s? (feet)`,
+        answer: h, answerHTML: `${h} ft`,
+        solution: [`h = −16(${t})² + ${v}(${t}) + ${h0}`, `= ${-16*t*t} + ${v*t} + ${h0}`, `= <b>${h} ft</b>`],
+        misses: [
+          { near: -16 * t + v * t + h0, msg: "You forgot to square t in the −16t² term." }
+        ]
+      });
+    }
+  }
+});
+
+S.push({
+  id: "word-mixture", name: "Mixture & concentration word problems", domain: "algebra", rit: 270, tag: "A-CED.1",
+  teach: {
+    idea: "Track the amount of the pure substance: (rate × amount) for each part adds to the rate × total of the mixture. Set up one equation in the unknown amount.",
+    mnemonic: "Pure-in + pure-in = pure-out.",
+    example: { stem: "How many L of 50% acid added to 4 L of 20% acid gives 30%?", steps: ["0.5x + 0.2·4 = 0.3(x+4)", "0.2x = 0.4", "x = <b>2</b> L"] }
+  },
+  gen(rng, diff) {
+    const cHigh = rng.pick([50, 60, 80, 100]);
+    const cLow = rng.pick([10, 20, 25]);
+    const target = rng.pick([30, 40].filter(t => t > cLow && t < cHigh));
+    const baseAmt = rng.int(D(diff, 3, 4, 5), D(diff, 6, 9, 12));
+    let x = null, base;
+    for (let b = baseAmt; b <= baseAmt + 20; b++) {
+      const num = b * (target - cLow);
+      const den = (cHigh - target);
+      if (num % den === 0) { x = num / den; base = b; break; }
+    }
+    if (x == null) { base = baseAmt; x = base * (target - cLow) / (cHigh - target); }
+    return numProblem({
+      stem: `How many liters of a ${cHigh}% acid solution must be added to ${base} L of a ${cLow}% acid solution to produce a ${target}% solution? (liters)`,
+      answer: x, answerHTML: `${x} L`, tol: 0.05,
+      solution: [`${cHigh/100}x + ${cLow/100}(${base}) = ${target/100}(x + ${base})`, `${(cHigh-target)/100}x = ${((target-cLow)*base/100).toFixed(2)}`, `x = <b>${x} L</b>`],
+      misses: [
+        { near: base, msg: "That's the amount already present, not the amount to add — solve the equation for x." }
+      ]
+    });
+  }
+});
+
+  // ----------------------------------------------------------------
+
+// ============ SKILL 1: Integer operations & order of operations with negatives ============
+S.push({
+  id: "int-pemdas-neg", name: "Order of operations with negatives", domain: "numbers", rit: 254, tag: "7.NS.A",
+  teach: {
+    idea: "Do operations in PEMDAS order, and track every negative sign. Multiply/divide before add/subtract, and go left-to-right within the same level.",
+    mnemonic: "PEMDAS: ×/÷ beat +/−; a negative times a negative is positive.",
+    example: { stem: "&minus;3 + 4 × (&minus;2)", steps: ["4 × (&minus;2) = &minus;8", "&minus;3 + (&minus;8)", "<b>&minus;11</b>"] }
+  },
+  gen(rng, diff) {
+    const b = rng.nonzero(2, D(diff, 5, 7, 9));
+    const c = rng.nonzero(2, D(diff, 5, 8, 11)) * (rng.bool() ? 1 : -1);
+    const a = rng.int(D(diff,-6,-9,-12), D(diff,9,9,12));
+    if (diff <= 1) {
+      const ans = a + b * c;
+      return numProblem({
+        stem: `${neg(a)} + ${b} &times; (${neg(c)})`,
+        answer: ans, answerHTML: `${ans}`,
+        solution: [`${b} &times; (${neg(c)}) = ${b*c}`, `${neg(a)} + (${neg(b*c)})`, `<b>${ans}</b>`],
+        misses: [{ near: (a + b) * c, msg: "You added before multiplying — multiplication comes first (PEMDAS)." }]
+      });
+    }
+    const d = rng.nonzero(2, D(diff, 6, 6, 10)) * (rng.bool() ? 1 : -1);
+    const ans = a - b * c + d;
+    return numProblem({
+      stem: `${neg(a)} &minus; ${b} &times; (${neg(c)}) + (${neg(d)})`,
+      answer: ans, answerHTML: `${ans}`,
+      solution: [`${b} &times; (${neg(c)}) = ${b*c}`, `${neg(a)} &minus; (${neg(b*c)}) + (${neg(d)})`, `<b>${ans}</b>`],
+      misses: [
+        { near: a - b * c - d, msg: "Sign slip on the last term — you subtracted it instead of adding." },
+        { near: (a - b) * c + d, msg: "You worked left-to-right ignoring PEMDAS — multiply before subtracting." }
+      ]
+    });
+  }
+});
+
+// ============ SKILL 2: Fraction operations (+ − × ÷) ============
+S.push({
+  id: "frac-four-ops", name: "Fraction operations (+ − × ÷)", domain: "numbers", rit: 252, tag: "7.NS.A.2",
+  teach: {
+    idea: "Add/subtract fractions over a common denominator. Multiply across the top and bottom. Divide by multiplying by the reciprocal (flip the second fraction).",
+    mnemonic: "Keep–Change–Flip for division; common denominator for +/−.",
+    example: { stem: `${fracHTML(2,3)} &divide; ${fracHTML(4,5)}`, steps: ["Flip: × 5/4", "(2×5)/(3×4) = 10/12", "<b>= 0.8333…</b>"] }
+  },
+  gen(rng, diff) {
+    const op = rng.pick(diff <= 1 ? ["+","×"] : ["+","−","×","÷"]);
+    const hi = D(diff, 6, 9, 12);
+    let a = rng.int(1, hi), b = rng.int(2, hi), c = rng.int(1, hi), d = rng.int(2, hi);
+    let val, sym, work;
+    if (op === "+") { val = a/b + c/d; sym = "+"; work = `${a*d} + ${c*b} over ${b*d}`; }
+    else if (op === "−") { val = a/b - c/d; sym = "&minus;"; work = `${a*d} &minus; ${c*b} over ${b*d}`; }
+    else if (op === "×") { val = (a/b) * (c/d); sym = "&times;"; work = `(${a}&times;${c}) / (${b}&times;${d})`; }
+    else { val = (a/b) / (c/d); sym = "&divide;"; work = `${a}/${b} &times; ${d}/${c}`; }
+    const ans = U.round(val, 4);
+    return numProblem({
+      stem: `Compute (round to 3 decimals): ${fracHTML(a,b)} ${sym} ${fracHTML(c,d)}`,
+      answer: ans, answerHTML: `${ans}`, tol: 0.005,
+      solution: [op === "÷" ? `Keep–Change–Flip: ${fracHTML(a,b)} &times; ${fracHTML(d,c)}` : `Combine: ${work}`, `= ${val}`, `<b>&asymp; ${ans}</b>`],
+      misses: op === "÷"
+        ? [{ near: U.round((a/b)*(c/d),4), msg: "You multiplied straight across instead of flipping the second fraction." }]
+        : (op === "+"
+          ? [{ near: U.round((a+c)/(b+d),4), msg: "You added numerators and denominators — you need a common denominator." }]
+          : [])
+    });
+  }
+});
+
+// ============ SKILL 3: GCF and LCM ============
+S.push({
+  id: "gcf-lcm", name: "GCF and LCM", domain: "numbers", rit: 250, tag: "6.NS.B.4",
+  teach: {
+    idea: "The GCF (greatest common factor) is the biggest number dividing both. The LCM (least common multiple) is the smallest number both divide into. They satisfy GCF × LCM = a × b.",
+    mnemonic: "GCF shrinks (a divisor); LCM grows (a multiple).",
+    example: { stem: "GCF and LCM of 12 and 18", steps: ["GCF = 6", "LCM = 12×18/6 = 36", "<b>GCF 6, LCM 36</b>"] }
+  },
+  gen(rng, diff) {
+    const g = rng.int(D(diff, 2, 3, 4), D(diff, 6, 9, 12));
+    let m = rng.int(2, D(diff, 6, 8, 10)), n = rng.int(2, D(diff, 7, 9, 12));
+    while (U.gcd(m, n) !== 1) { n = rng.int(2, D(diff, 7, 9, 12)); }
+    const a = g * m, b = g * n;
+    const askLCM = rng.bool();
+    const gcf = U.gcd(a, b);
+    const lcm = a * b / gcf;
+    if (askLCM) {
+      return numProblem({
+        stem: `Find the LCM (least common multiple) of ${a} and ${b}.`,
+        answer: lcm, answerHTML: `${lcm}`,
+        solution: [`GCF(${a}, ${b}) = ${gcf}`, `LCM = ${a}&times;${b} / ${gcf}`, `<b>${lcm}</b>`],
+        misses: [{ near: gcf, msg: "That's the GCF — the LCM is the smallest common multiple, which is larger." },
+                 { near: a * b, msg: "You used the full product — divide a×b by the GCF to get the LCM." }]
+      });
+    }
+    return numProblem({
+      stem: `Find the GCF (greatest common factor) of ${a} and ${b}.`,
+      answer: gcf, answerHTML: `${gcf}`,
+      solution: [`Common factors of ${a} and ${b}`, `Greatest is <b>${gcf}</b>`],
+      misses: [{ near: lcm, msg: "That's the LCM — the GCF is a divisor of both, which is smaller." }]
+    });
+  }
+});
+
+// ============ SKILL 4: Scientific notation (convert & compare) ============
+S.push({
+  id: "sci-notation-convert", name: "Scientific notation: convert & compare", domain: "numbers", rit: 256, tag: "8.EE.A.4",
+  teach: {
+    idea: "Scientific notation is a × 10ⁿ with 1 ≤ |a| < 10. A positive exponent moves the decimal right (big number); a negative exponent moves it left (small number).",
+    mnemonic: "Negative exponent = tiny number, not a negative number.",
+    example: { stem: "Write 0.00042 in scientific notation", steps: ["Move decimal 4 places right: 4.2", "Exponent is &minus;4", "<b>4.2 × 10⁻⁴</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(diff <= 1 ? ["toSci","toStd"] : ["toSci","toStd","compare"]);
+    const a = rng.int(1, 9), b = rng.int(0, 9);
+    const mant = parseFloat(`${a}.${b}`);
+    const exp = rng.pick(diff <= 1 ? [2,3,4,-2,-3] : [3,4,5,6,-3,-4,-5]);
+    const sciHTML = `${mant} &times; 10${sup(exp)}`;
+    const stdVal = mant * Math.pow(10, exp);
+    const stdStr = (exp >= 0)
+      ? String(Math.round(stdVal))
+      : stdVal.toFixed(Math.abs(exp) + 1).replace(/0+$/,'').replace(/\.$/,'');
+    if (mode === "toSci") {
+      const wrongExpA = `${mant} &times; 10${sup(exp + (exp>=0?1:-1))}`;
+      const wrongExpB = `${mant} &times; 10${sup(-exp)}`;
+      const wrongMant = `${mant*10} &times; 10${sup(exp-1)}`;
+      return mcProblem({
+        stem: `Write ${stdStr} in scientific notation.`,
+        solution: [`Mantissa between 1 and 10: ${mant}`, `Decimal moved ${Math.abs(exp)} places`, `<b>${sciHTML}</b>`]
+      }, mkMC(rng, sciHTML, [
+        { html: wrongExpB, miss: "You flipped the sign of the exponent — check whether the number is big or small." },
+        { html: wrongMant, miss: "Mantissa must be between 1 and 10; rewrite so there's one nonzero digit before the decimal." },
+        { html: wrongExpA, miss: "Off-by-one on the exponent — recount the decimal places moved." }
+      ]));
+    }
+    if (mode === "toStd") {
+      const wrongA = (exp >= 0) ? String(Math.round(mant * Math.pow(10, exp-1))) : stdVal.toFixed(Math.abs(exp)).replace(/0+$/,'').replace(/\.$/,'');
+      const wrongB = (exp >= 0) ? String(Math.round(mant * Math.pow(10, -exp))) : String(mant * Math.pow(10, -exp));
+      const wrongC = String(mant * Math.pow(10, exp >= 0 ? exp+1 : exp-1));
+      return mcProblem({
+        stem: `Write ${sciHTML} in standard (decimal) form.`,
+        solution: [`Move the decimal ${Math.abs(exp)} places ${exp>=0?"right":"left"}`, `<b>${stdStr}</b>`]
+      }, mkMC(rng, stdStr, [
+        { html: wrongB, miss: "You moved the decimal the wrong direction — a negative exponent makes a small number." },
+        { html: wrongA, miss: "Off-by-one: you moved the decimal one place too few." },
+        { html: wrongC, miss: "Off-by-one: you moved the decimal one place too many." }
+      ]));
+    }
+    const a2 = rng.int(1, 9), b2 = rng.int(0, 9);
+    const mant2 = parseFloat(`${a2}.${b2}`);
+    let exp2 = rng.pick([3,4,5,6,-3,-4,-5]);
+    let v1 = mant * Math.pow(10, exp), v2 = mant2 * Math.pow(10, exp2);
+    while (Math.abs(v1 - v2) < 1e-12 || exp2 === exp) { exp2 = rng.pick([3,4,5,6,-3,-4,-5]); v2 = mant2 * Math.pow(10, exp2); }
+    const n1 = `${mant} &times; 10${sup(exp)}`, n2 = `${mant2} &times; 10${sup(exp2)}`;
+    const bigger = v1 > v2 ? n1 : n2;
+    const smaller = v1 > v2 ? n2 : n1;
+    return mcProblem({
+      stem: `Which is larger: ${n1} or ${n2}?`,
+      solution: [`Compare exponents first, then mantissas`, `<b>${bigger}</b> is larger`]
+    }, mkMC(rng, bigger, [
+      { html: smaller, miss: "Compare the powers of 10 first — a bigger exponent wins regardless of the mantissa." },
+      { html: "They are equal", miss: "They have different values — line up the powers of 10 to compare." },
+      { html: "Cannot be determined", miss: "You always can compare: bigger exponent first, then bigger mantissa." }
+    ]));
+  }
+});
+
+// ============ SKILL 5: Absolute value & opposites ============
+S.push({
+  id: "absval-opposites", name: "Absolute value & opposites", domain: "numbers", rit: 250, tag: "6.NS.C.7",
+  teach: {
+    idea: "Absolute value |x| is the distance from 0, so it's never negative. The opposite of x is −x. Watch a minus sign OUTSIDE the bars: −|x| stays negative.",
+    mnemonic: "Bars = distance (always ≥ 0); a sign outside the bars survives.",
+    example: { stem: "Evaluate &minus;|&minus;3 + 7|", steps: ["Inside: &minus;3 + 7 = 4", "|4| = 4", "Outside minus: <b>&minus;4</b>"] }
+  },
+  gen(rng, diff) {
+    if (diff <= 1) {
+      const x = rng.nonzero(-12, 12);
+      const ans = Math.abs(x);
+      return numProblem({
+        stem: `Evaluate: |${neg(x)}|`,
+        answer: ans, answerHTML: `${ans}`,
+        solution: [`Distance of ${neg(x)} from 0`, `<b>${ans}</b>`],
+        misses: [{ near: x, msg: "Absolute value is never negative — it's the distance from 0." }]
+      });
+    }
+    const p = rng.nonzero(-9, 9), q = rng.nonzero(-9, 9);
+    const outsideNeg = rng.bool();
+    const inside = p + q;
+    const ans = (outsideNeg ? -1 : 1) * Math.abs(inside);
+    const lead = outsideNeg ? "&minus;" : "";
+    return numProblem({
+      stem: `Evaluate: ${lead}|${neg(p)} + (${neg(q)})|`,
+      answer: ans, answerHTML: `${ans}`,
+      solution: [`Inside: ${neg(p)} + (${neg(q)}) = ${inside}`, `|${inside}| = ${Math.abs(inside)}`, `<b>${ans}</b>`],
+      misses: [
+        { near: inside, msg: "You skipped the absolute value — take the distance from 0 first." },
+        ...(outsideNeg ? [{ near: Math.abs(inside), msg: "There's a minus sign OUTSIDE the bars — it makes the result negative." }] : [])
+      ]
+    });
+  }
+});
+
+// ============ SKILL 6: Rationalizing a denominator ============
+S.push({
+  id: "rationalize-denom", name: "Rationalizing a denominator", domain: "numbers", rit: 260, tag: "N-RN.A.2",
+  teach: {
+    idea: "To clear a square root from a denominator, multiply the fraction by √b/√b. This keeps the value the same (you multiply by 1) but moves the radical to the numerator.",
+    mnemonic: "Multiply by √b over √b — a sneaky form of 1.",
+    example: { stem: `Rationalize ${fracHTML(3, sqrtHTML(5))}`, steps: ["× √5/√5", "= 3√5 / 5", "<b>3√5 ⁄ 5</b>"] }
+  },
+  gen(rng, diff) {
+    const rads = diff <= 1 ? [2,3,5] : (diff === 2 ? [2,3,5,6,7] : [3,5,6,7,10,11]);
+    let b = rng.pick(rads);
+    while (U.isPerfectSquare(b)) b = rng.pick(rads);
+    const a = rng.int(2, D(diff, 6, 9, 12));
+    const g = U.gcd(a, b);
+    const numCoef = a / g, den = b / g;
+    const correct = den === 1 ? `${numCoef === 1 ? "" : numCoef}${sqrtHTML(b)}` : `${fracHTML(`${numCoef === 1 ? "" : numCoef}${sqrtHTML(b)}`, den)}`;
+    const wrongFlip = `${fracHTML(a, sqrtHTML(b))}`;
+    const wrongNoCoef = `${fracHTML(sqrtHTML(b), b)}`;
+    const wrongSq = `${fracHTML(`${a}${sqrtHTML(b)}`, b*b)}`;
+    return mcProblem({
+      stem: `Rationalize the denominator: ${fracHTML(a, sqrtHTML(b))}`,
+      solution: [`Multiply by ${fracHTML(sqrtHTML(b), sqrtHTML(b))}`, `= ${fracHTML(`${a}${sqrtHTML(b)}`, b)}`, `<b>${correct}</b>`]
+    }, mkMC(rng, correct, [
+      { html: wrongFlip, miss: "That's the original — you still have a radical in the denominator." },
+      { html: wrongNoCoef, miss: "You dropped the numerator; multiply the whole fraction by √b/√b." },
+      { html: wrongSq, miss: "√b × √b = b, not b²; the denominator becomes b." }
+    ]));
+  }
+});
+
+  // ----------------------------------------------------------------
+
+S.push({
+  id: "func-compose-eval", name: "Composition f(g(x)) at a number", domain: "functions", rit: 264, tag: "F-BF.1",
+  teach: {
+    idea: "To find f(g(a)), evaluate the <i>inner</i> function g at a first, then plug that result into f.",
+    mnemonic: "Inside-out: g goes first, then f.",
+    example: { stem: "f(x)=2x+1, g(x)=x−3. Find f(g(5)).", steps: ["g(5) = 5 − 3 = 2", "f(2) = 2·2 + 1 = 5", "<b>5</b>"] }
+  },
+  gen(rng, diff) {
+    const a = rng.int(2, D(diff, 4, 5, 7));
+    const m1 = rng.nonzero(2, D(diff, 3, 4, 5)), b1 = rng.int(D(diff,-3,-6,-9), D(diff,3,6,9));
+    const m2 = rng.nonzero(2, D(diff, 3, 4, 5)), b2 = rng.int(D(diff,-3,-6,-9), D(diff,3,6,9));
+    const g = m2 * a + b2;
+    const ans = m1 * g + b1;
+    return numProblem({
+      stem: `f(x) = ${lin(m1,b1)},&nbsp; g(x) = ${lin(m2,b2)}.&nbsp; Find f(g(${a})).`,
+      answer: ans, answerHTML: `f(g(${a})) = ${ans}`,
+      solution: [`g(${a}) = ${m2}·${a} ${pm(b2)} = ${g}`, `f(${g}) = ${m1}·${g} ${pm(b1)} = <b>${ans}</b>`],
+      misses: [
+        { near: m2 * (m1*a+b1) + b2, msg: "You computed g(f(a)) — the inside function g must be evaluated first." },
+        { near: a, msg: "Substitute the number into g, then that result into f; don't just return the input." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "piecewise-eval", name: "Piecewise function evaluation", domain: "functions", rit: 262, tag: "F-IF.2",
+  teach: {
+    idea: "Pick the rule whose condition the input satisfies, then substitute. Watch which interval contains the number.",
+    mnemonic: "Match the input to its interval before you plug in.",
+    example: { stem: "f(x)= 2x+1 if x<0, else x². Find f(3).", steps: ["3 ≥ 0, so use x²", "f(3) = 3² = 9", "<b>9</b>"] }
+  },
+  gen(rng, diff) {
+    const c = rng.int(D(diff,-1,-3,-4), D(diff,2,4,5));
+    const m1 = rng.nonzero(2,4), b1 = rng.int(-5,5);
+    const m2 = rng.nonzero(2,4), b2 = rng.int(-5,5);
+    const below = rng.bool();
+    const x = below ? rng.int(c - D(diff,4,6,8), c - 1) : rng.int(c, c + D(diff,3,4,5));
+    const f1 = (t) => m1 * t + b1;
+    const f2 = (t) => m2 * t * t + b2;
+    const ans = below ? f1(x) : f2(x);
+    const other = below ? f2(x) : f1(x);
+    return numProblem({
+      stem: `f(x) = ${lin(m1,b1)} if x &lt; ${c},&nbsp; ${m2}x${sup(2)} ${pm(b2)} if x &ge; ${c}.&nbsp; Find f(${x}).`,
+      answer: ans, answerHTML: `f(${x}) = ${ans}`,
+      solution: [
+        below ? `${x} &lt; ${c}, so use ${lin(m1,b1)}` : `${x} &ge; ${c}, so use ${m2}x${sup(2)} ${pm(b2)}`,
+        `f(${x}) = <b>${ans}</b>`
+      ],
+      misses: [{ near: other, msg: "You used the wrong piece — check whether the input is below or at/above the boundary." }]
+    });
+  }
+});
+
+S.push({
+  id: "avg-rate-change", name: "Average rate of change on [a,b]", domain: "functions", rit: 266, tag: "F-IF.6",
+  teach: {
+    idea: "Average rate of change of f on [a,b] is (f(b) − f(a)) / (b − a) — the slope between the two endpoints.",
+    mnemonic: "Rise over run: difference of outputs ÷ difference of inputs.",
+    example: { stem: "f(x)=x². Average rate of change on [1,4].", steps: ["f(4)−f(1) = 16 − 1 = 15", "÷ (4 − 1) = 15/3 = 5", "<b>5</b>"] }
+  },
+  gen(rng, diff) {
+    const p = rng.nonzero(1, D(diff,1,2,3));
+    const q = rng.int(D(diff,-2,-4,-6), D(diff,2,4,6));
+    const r = rng.int(-5,5);
+    let a = rng.int(D(diff,-2,-4,-6), 1);
+    let len = rng.int(2, D(diff,3,4,5));
+    let b = a + len;
+    const f = (t) => p*t*t + q*t + r;
+    const ans = (f(b) - f(a)) / (b - a);
+    return numProblem({
+      stem: `f(x) = ${quad(p,q,r)}.&nbsp; Find the average rate of change on [${a}, ${b}].`,
+      answer: ans, answerHTML: `${ans}`, tol: 0.02,
+      solution: [
+        `f(${b}) = ${f(b)},&nbsp; f(${a}) = ${f(a)}`,
+        `(${f(b)} &minus; ${f(a)}) / (${b} &minus; ${a}) = ${f(b)-f(a)}/${b-a}`,
+        `<b>${ans}</b>`
+      ],
+      misses: [
+        { near: f(b) - f(a), msg: "You forgot to divide by (b − a); rate of change is rise OVER run." },
+        { near: (f(b)-f(a))/(b+a), msg: "Divide by (b − a), not (b + a)." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "variation-direct-inverse", name: "Direct & inverse variation", domain: "functions", rit: 263, tag: "A-CED.2",
+  teach: {
+    idea: "Direct: y = kx (y/x is constant). Inverse: y = k/x (xy is constant). Find k from the given pair, then use it.",
+    mnemonic: "Direct multiplies; inverse divides. Direct grows together, inverse trades off.",
+    example: { stem: "y varies inversely with x; y=6 when x=4. Find y when x=8.", steps: ["k = xy = 4·6 = 24", "y = 24/8 = 3", "<b>3</b>"] }
+  },
+  gen(rng, diff) {
+    const direct = rng.bool();
+    const k = rng.int(D(diff,2,3,4), D(diff,8,12,18));
+    if (direct) {
+      const x1 = rng.int(2, D(diff,5,7,9));
+      const y1 = k * x1;
+      const x2 = rng.int(2, D(diff,6,9,12));
+      const ans = k * x2;
+      return numProblem({
+        stem: `y varies directly with x.&nbsp; y = ${y1} when x = ${x1}.&nbsp; Find y when x = ${x2}.`,
+        answer: ans, answerHTML: `y = ${ans}`,
+        solution: [`k = y/x = ${y1}/${x1} = ${k}`, `y = ${k}·${x2} = <b>${ans}</b>`],
+        misses: [{ near: y1 + (x2 - x1), msg: "Direct variation scales by a constant factor k, not by adding the change in x." }]
+      });
+    } else {
+      const divs = [];
+      for (let d = 2; d <= k; d++) if (k % d === 0) divs.push(d);
+      const x1 = rng.pick(divs), x2 = rng.pick(divs.filter(d => d !== x1).length ? divs.filter(d => d !== x1) : divs);
+      const y1 = k / x1;
+      const ans = k / x2;
+      return numProblem({
+        stem: `y varies inversely with x.&nbsp; y = ${y1} when x = ${x1}.&nbsp; Find y when x = ${x2}.`,
+        answer: ans, answerHTML: `y = ${ans}`,
+        solution: [`k = x·y = ${x1}·${y1} = ${k}`, `y = ${k}/${x2} = <b>${ans}</b>`],
+        misses: [{ near: y1 * (x2 / x1), msg: "For inverse variation y = k/x: when x doubles, y halves — they move oppositely." }]
+      });
+    }
+  }
+});
+
+S.push({
+  id: "halflife-doubling", name: "Half-life & doubling", domain: "functions", rit: 268, tag: "F-LE.2",
+  teach: {
+    idea: "Half-life: A = A₀·(1/2)^(t/h). Doubling: A = A₀·2^(t/d). The exponent counts how many periods have passed.",
+    mnemonic: "Count the periods (t ÷ length), then halve or double that many times.",
+    example: { stem: "200 g, half-life 5 yr. Amount after 15 yr.", steps: ["periods = 15/5 = 3", "200·(1/2)³ = 200/8 = 25", "<b>25</b>"] }
+  },
+  gen(rng, diff) {
+    const doubling = rng.bool();
+    const periods = rng.int(2, D(diff,3,4,5));
+    const len = rng.int(2, D(diff,4,6,8));
+    const t = periods * len;
+    if (doubling) {
+      const A0 = rng.int(D(diff,2,3,5), D(diff,9,15,30)) * 10;
+      const ans = A0 * Math.pow(2, periods);
+      return numProblem({
+        stem: `A culture starts at ${A0} cells and doubles every ${len} hours.&nbsp; How many cells after ${t} hours?`,
+        answer: ans, answerHTML: `${ans} cells`,
+        solution: [`periods = ${t}/${len} = ${periods}`, `${A0}·2${sup(periods)} = ${A0}·${Math.pow(2,periods)} = <b>${ans}</b>`],
+        misses: [
+          { near: A0 * 2 * periods, msg: "Doubling is repeated multiplication (×2 each period), not multiplying by 2 once or adding." },
+          { near: A0 * periods, msg: "Each period multiplies by 2; raise 2 to the number of periods." }
+        ]
+      });
+    } else {
+      const A0 = rng.int(2, D(diff,5,8,12)) * Math.pow(2, periods);
+      const ans = A0 / Math.pow(2, periods);
+      return numProblem({
+        stem: `A ${A0} mg sample has a half-life of ${len} days.&nbsp; How much remains after ${t} days?`,
+        answer: ans, answerHTML: `${ans} mg`, tol: 0.05,
+        solution: [`periods = ${t}/${len} = ${periods}`, `${A0}·(1/2)${sup(periods)} = ${A0}/${Math.pow(2,periods)} = <b>${ans}</b>`],
+        misses: [
+          { near: A0 / (2 * periods), msg: "Each period HALVES the amount; divide by 2 raised to the number of periods." },
+          { near: A0 - A0 / 2 * periods, msg: "Half-life is repeated halving (×1/2 each period), not subtracting a fixed amount." }
+        ]
+      });
+    }
+  }
+});
+
+S.push({
+  id: "recursive-explicit-term", name: "Recursive & explicit sequence term", domain: "functions", rit: 265, tag: "F-BF.2",
+  teach: {
+    idea: "A recursive rule aₙ = aₙ₋₁ + d (or ·r) with a first term defines an arithmetic/geometric sequence. Convert to explicit aₙ = a₁ + (n−1)d (or a₁·r^(n−1)) to jump to a term.",
+    mnemonic: "Recursive = step-by-step; explicit = teleport to term n.",
+    example: { stem: "a₁=3, aₙ=aₙ₋₁+4. Find a₆.", steps: ["explicit: aₙ = 3 + (n−1)·4", "a₆ = 3 + 5·4 = 23", "<b>23</b>"] }
+  },
+  gen(rng, diff) {
+    const arithmetic = rng.bool();
+    const a1 = rng.int(D(diff,1,2,3), D(diff,4,6,8));
+    const n = rng.int(D(diff,5,6,7), D(diff,6,8,10));
+    if (arithmetic) {
+      const d = rng.nonzero(2, D(diff,3,5,7)) * rng.sign();
+      const ans = a1 + (n - 1) * d;
+      return numProblem({
+        stem: `a${sub(1)} = ${a1},&nbsp; a${sub("n")} = a${sub("n−1")} ${pm(d)}.&nbsp; Find a${sub(n)}.`,
+        answer: ans, answerHTML: `a${sub(n)} = ${ans}`,
+        solution: [`explicit: a${sub("n")} = ${a1} + (n − 1)·(${d})`, `a${sub(n)} = ${a1} + ${n-1}·${d} = <b>${ans}</b>`],
+        misses: [{ near: a1 + n * d, msg: "Use (n − 1) steps from the first term, not n." }]
+      });
+    } else {
+      const r = rng.int(2, D(diff,2,3,3));
+      const nn = rng.int(3, D(diff,4,5,5));
+      const ans = a1 * Math.pow(r, nn - 1);
+      return numProblem({
+        stem: `a${sub(1)} = ${a1},&nbsp; a${sub("n")} = ${r}·a${sub("n−1")}.&nbsp; Find a${sub(nn)}.`,
+        answer: ans, answerHTML: `a${sub(nn)} = ${ans}`,
+        solution: [`explicit: a${sub("n")} = ${a1}·${r}${sup("(n−1)")}`, `a${sub(nn)} = ${a1}·${r}${sup(nn-1)} = <b>${ans}</b>`],
+        misses: [{ near: a1 * r * nn, msg: "Geometric jumps multiply by r each step: raise r to (n − 1), don't multiply by n." }]
+      });
+    }
+  }
+});
+function sub(s){ return `<sub>${s}</sub>`; }
+
+  // ----------------------------------------------------------------
+
+S.push({
+  id: "surface-area-solids", name: "Surface area of cone / pyramid / sphere", domain: "geometry", rit: 264, tag: "G-GMD.3",
+  teach: {
+    idea: "Cone: S = πr² + πrℓ (ℓ = slant). Square pyramid: S = b² + 2bℓ (ℓ = slant height of a triangular face). Sphere: S = 4πr².",
+    mnemonic: "Sphere is 'four pies': S = 4πr².",
+    example: { stem: "Cone with r = 3, slant ℓ = 5. Surface area?", steps: ["S = πr² + πrℓ = π·9 + π·15", "= 24π ≈ <b>75.40</b>"] }
+  },
+  gen(rng, diff) {
+    const which = rng.pick(["cone", "pyramid", "sphere"]);
+    if (which === "sphere") {
+      const r = rng.int(D(diff, 3, 5, 8), D(diff, 6, 10, 15));
+      const S = U.round(4 * Math.PI * r * r, 2);
+      return numProblem({
+        stem: `Find the surface area of a sphere with radius ${r}. Round to 2 decimals.`,
+        answer: S, answerHTML: `${S}`, tol: 0.05,
+        solution: [`S = 4πr² = 4π·${r}²`, `= ${4 * r * r}π`, `≈ <b>${S}</b>`],
+        misses: [{ near: U.round(Math.PI * r * r, 2), msg: "That's πr² — a sphere's surface area is 4πr²." }]
+      });
+    }
+    if (which === "cone") {
+      const r = rng.int(D(diff, 3, 4, 5), D(diff, 5, 7, 9));
+      const l = rng.int(r + 2, r + D(diff, 5, 8, 12));
+      const S = U.round(Math.PI * r * r + Math.PI * r * l, 2);
+      return numProblem({
+        stem: `Find the surface area of a cone with radius ${r} and slant height ${l}. Round to 2 decimals.`,
+        answer: S, answerHTML: `${S}`, tol: 0.05,
+        solution: [`S = πr² + πrℓ = π·${r}² + π·${r}·${l}`, `= ${r * r + r * l}π`, `≈ <b>${S}</b>`],
+        misses: [{ near: U.round(Math.PI * r * l, 2), msg: "You found only the lateral area πrℓ — add the base πr²." }]
+      });
+    }
+    // square pyramid
+    const b = rng.int(D(diff, 4, 6, 8), D(diff, 6, 9, 12));
+    const l = rng.int(b, b + D(diff, 4, 7, 10));
+    const S = b * b + 2 * b * l;
+    return numProblem({
+      stem: `Find the surface area of a square pyramid with base edge ${b} and slant height ${l}.`,
+      answer: S, answerHTML: `${S}`,
+      solution: [`S = b² + 2bℓ = ${b}² + 2·${b}·${l}`, `= ${b * b} + ${2 * b * l}`, `= <b>${S}</b>`],
+      misses: [{ near: b * b + 4 * b * l, msg: "Each of the 4 triangular faces has area ½·b·ℓ, so the lateral total is 2bℓ, not 4bℓ." }]
+    });
+  }
+});
+
+S.push({
+  id: "volume-composite", name: "Volume of a composite solid", domain: "geometry", rit: 268, tag: "G-GMD.3",
+  teach: {
+    idea: "Break the solid into known pieces and ADD their volumes. Cylinder V = πr²h; cone V = ⅓πr²h; hemisphere V = ⅔πr³.",
+    example: { stem: "Cylinder (r = 2, h = 5) topped by a cone (r = 2, h = 3). Volume?", steps: ["Cyl = π·4·5 = 20π; Cone = ⅓·π·4·3 = 4π", "Total = 24π ≈ <b>75.40</b>"] }
+  },
+  gen(rng, diff) {
+    const r = rng.int(D(diff, 2, 3, 4), D(diff, 4, 5, 7));
+    const hc = rng.int(D(diff, 4, 5, 6), D(diff, 7, 9, 12)); // cylinder height
+    const combo = rng.pick(["cone", "hemisphere"]);
+    if (combo === "cone") {
+      const hk = rng.int(3, D(diff, 6, 9, 12)); // cone height
+      const V = U.round(Math.PI * r * r * hc + (1 / 3) * Math.PI * r * r * hk, 2);
+      return numProblem({
+        stem: `A cylinder of radius ${r} and height ${hc} is topped by a cone of the same radius and height ${hk}. Find the total volume. Round to 2 decimals.`,
+        answer: V, answerHTML: `${V}`, tol: 0.05,
+        solution: [`Cylinder = πr²h = π·${r}²·${hc} = ${r * r * hc}π`, `Cone = ⅓πr²h = ⅓·π·${r}²·${hk} = ${U.round(r * r * hk / 3, 4)}π`, `Total = ${U.round(r * r * hc + r * r * hk / 3, 4)}π ≈ <b>${V}</b>`],
+        misses: [{ near: U.round(Math.PI * r * r * hc + Math.PI * r * r * hk, 2), msg: "Forgot the ⅓ on the cone — a cone is one-third of the cylinder with the same base and height." }]
+      });
+    }
+    // hemisphere on top of cylinder
+    const V = U.round(Math.PI * r * r * hc + (2 / 3) * Math.PI * r * r * r, 2);
+    return numProblem({
+      stem: `A cylinder of radius ${r} and height ${hc} is capped by a hemisphere of the same radius. Find the total volume. Round to 2 decimals.`,
+      answer: V, answerHTML: `${V}`, tol: 0.05,
+      solution: [`Cylinder = πr²h = π·${r}²·${hc} = ${r * r * hc}π`, `Hemisphere = ⅔πr³ = ⅔·π·${r}³ = ${U.round(2 * r * r * r / 3, 4)}π`, `Total = ${U.round(r * r * hc + 2 * r * r * r / 3, 4)}π ≈ <b>${V}</b>`],
+      misses: [{ near: U.round(Math.PI * r * r * hc + (4 / 3) * Math.PI * r * r * r, 2), msg: "A hemisphere is HALF a sphere: ⅔πr³, not the full ⁴⁄₃πr³." }]
+    });
+  }
+});
+
+S.push({
+  id: "similar-solids-ratio", name: "Similar solids: area & volume ratios", domain: "geometry", rit: 266, tag: "G-GMD.5",
+  teach: {
+    idea: "If two similar solids have scale factor a:b (linear), then their surface areas are in ratio a²:b² and their volumes in ratio a³:b³.",
+    mnemonic: "Length¹, Area², Volume³ — square it for area, cube it for volume.",
+    example: { stem: "Scale factor 2:3. Volume ratio?", steps: ["Cube the linear ratio: 2³:3³", "= <b>8:27</b>"] }
+  },
+  gen(rng, diff) {
+    const a = rng.int(2, D(diff, 4, 5, 6));
+    let b = rng.int(a + 1, a + D(diff, 3, 5, 7));
+    const g = U.gcd(a, b); const a2 = a / g, b2 = b / g; // reduced scale
+    const ask = rng.pick(["area", "volume"]);
+    if (ask === "area") {
+      const num = a2 * a2, den = b2 * b2;
+      return mcProblem({
+        stem: `Two similar solids have scale factor ${a2}:${b2}. What is the ratio of their surface areas?`,
+        solution: [`Square the scale factor: ${a2}²:${b2}²`, `= <b>${num}:${den}</b>`]
+      }, mkMC(rng, `${num}:${den}`, [
+        { html: `${a2}:${b2}`, miss: "That's the linear ratio — surface area scales as the SQUARE of the scale factor." },
+        { html: `${a2 * a2 * a2}:${b2 * b2 * b2}`, miss: "That's the VOLUME ratio (cubed). Area is squared." },
+        `${2 * a2}:${2 * b2}`
+      ]));
+    }
+    const num = a2 * a2 * a2, den = b2 * b2 * b2;
+    return mcProblem({
+      stem: `Two similar solids have scale factor ${a2}:${b2}. What is the ratio of their volumes?`,
+      solution: [`Cube the scale factor: ${a2}³:${b2}³`, `= <b>${num}:${den}</b>`]
+    }, mkMC(rng, `${num}:${den}`, [
+      { html: `${a2}:${b2}`, miss: "That's the linear ratio — volume scales as the CUBE of the scale factor." },
+      { html: `${a2 * a2}:${b2 * b2}`, miss: "That's the AREA ratio (squared). Volume is cubed." },
+      `${3 * a2}:${3 * b2}`
+    ]));
+  }
+});
+
+S.push({
+  id: "law-sines-cosines", name: "Law of Sines / Cosines", domain: "geometry", rit: 274, tag: "G-SRT.11", stretch: true,
+  teach: {
+    idea: "Law of Sines: a/sin A = b/sin B. Law of Cosines: c² = a² + b² − 2ab·cos C (use when you know two sides + the included angle, or all three sides).",
+    mnemonic: "Two sides and the angle BETWEEN → Cosines. A matching side-angle PAIR → Sines.",
+    example: { stem: "Sides a = 7, b = 9, included angle C = 40°. Find c.", steps: ["c² = 49 + 81 − 2·7·9·cos40°", "c² = 130 − 126·0.766 ≈ 33.5", "c ≈ <b>5.79</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(["cos-side", "sin-side"]);
+    if (mode === "cos-side") {
+      const a = rng.int(D(diff, 6, 7, 8), D(diff, 9, 11, 14));
+      const b = rng.int(D(diff, 6, 7, 8), D(diff, 9, 11, 14));
+      const C = rng.int(D(diff, 35, 40, 50), D(diff, 70, 85, 110));
+      const c2 = a * a + b * b - 2 * a * b * Math.cos(C * Math.PI / 180);
+      const c = U.round(Math.sqrt(c2), 2);
+      return numProblem({
+        stem: `In a triangle, sides a = ${a} and b = ${b} include angle C = ${C}°. Find side c. Round to 2 decimals.`,
+        answer: c, answerHTML: `${c}`, tol: 0.05,
+        solution: [`c² = a² + b² − 2ab·cos C`, `= ${a * a + b * b} − ${2 * a * b}·cos${C}° ≈ ${U.round(c2, 3)}`, `c ≈ <b>${c}</b>`],
+        misses: [{ near: U.round(Math.sqrt(a * a + b * b + 2 * a * b * Math.cos(C * Math.PI / 180)), 2), msg: "Sign error: the Law of Cosines SUBTRACTS 2ab·cos C." }]
+      });
+    }
+    // law of sines: find a side given angle A, angle B, and side b
+    const A = rng.int(D(diff, 35, 40, 45), D(diff, 60, 70, 75));
+    const B = rng.int(D(diff, 35, 40, 45), D(diff, 60, 70, 75));
+    const b = rng.int(D(diff, 6, 8, 10), D(diff, 12, 16, 20));
+    const a = U.round(b * Math.sin(A * Math.PI / 180) / Math.sin(B * Math.PI / 180), 2);
+    return numProblem({
+      stem: `In a triangle, angle A = ${A}°, angle B = ${B}°, and side b = ${b} (opposite B). Find side a (opposite A). Round to 2 decimals.`,
+      answer: a, answerHTML: `${a}`, tol: 0.05,
+      solution: [`a/sin A = b/sin B`, `a = b·sin A / sin B = ${b}·sin${A}° / sin${B}°`, `≈ <b>${a}</b>`],
+      misses: [{ near: U.round(b * Math.sin(B * Math.PI / 180) / Math.sin(A * Math.PI / 180), 2), msg: "You flipped the ratio — a = b·sin A / sin B, with sin of the angle opposite the side you want on top." }]
+    });
+  }
+});
+
+S.push({
+  id: "unit-circle-radians", name: "Radians, degrees & reference angles", domain: "geometry", rit: 272, tag: "F-TF.1", stretch: true,
+  teach: {
+    idea: "180° = π radians, so multiply degrees by π/180 to get radians (and by 180/π to go back). A reference angle is the acute angle to the nearest x-axis.",
+    mnemonic: "Radians = degrees × π/180. ('π over 180, degrees go in.')",
+    example: { stem: "Convert 135° to radians.", steps: ["135 · π/180 = 135π/180", "= <b>3π/4</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(["deg2rad", "rad2deg", "refangle"]);
+    if (mode === "deg2rad") {
+      const deg = rng.pick(D(diff, [30, 45, 60, 90], [120, 135, 150, 210], [225, 240, 300, 330]));
+      const [n, d] = U.simplifyFrac(deg, 180);
+      return numProblem({
+        stem: `Convert ${deg}° to radians (the exact value is ${n === 1 ? "" : n}π/${d}). Enter the decimal, rounded to 3 decimals.`,
+        answer: U.round(deg * Math.PI / 180, 3), answerHTML: `${n === 1 ? "" : n}π/${d} ≈ ${U.round(deg * Math.PI / 180, 3)}`, tol: 0.01,
+        solution: [`${deg}·π/180 = ${n}π/${d}`, `≈ <b>${U.round(deg * Math.PI / 180, 3)}</b>`],
+        misses: [{ near: U.round(deg * 180 / Math.PI, 3), msg: "You multiplied by 180/π — to go FROM degrees TO radians, multiply by π/180." }]
+      });
+    }
+    if (mode === "rad2deg") {
+      // radians given as n·π/d
+      const d = rng.pick([2, 3, 4, 6]);
+      const n = rng.int(1, D(diff, 3, 5, 7));
+      const deg = U.round(n * 180 / d, 2);
+      return numProblem({
+        stem: `Convert ${n === 1 ? "" : n}π/${d} radians to degrees.`,
+        answer: deg, answerHTML: `${deg}°`, tol: 0.05,
+        solution: [`(${n}π/${d})·(180/π) = ${n}·180/${d}`, `= <b>${deg}°</b>`],
+        misses: [{ near: U.round(n * Math.PI / d * Math.PI / 180, 4), msg: "To go FROM radians TO degrees, multiply by 180/π (not π/180)." }]
+      });
+    }
+    // reference angle (degrees)
+    const angle = rng.pick(D(diff, [120, 150, 210, 240], [135, 225, 300, 330], [160, 200, 290, 340]));
+    let ref;
+    if (angle < 90) ref = angle;
+    else if (angle < 180) ref = 180 - angle;
+    else if (angle < 270) ref = angle - 180;
+    else ref = 360 - angle;
+    return numProblem({
+      stem: `Find the reference angle of ${angle}° (in degrees).`,
+      answer: ref, answerHTML: `${ref}°`,
+      solution: [`${angle}° is in quadrant ${angle < 180 ? "II" : (angle < 270 ? "III" : "IV")}.`, `Reference angle = ${angle < 180 ? "180 − " + angle : (angle < 270 ? angle + " − 180" : "360 − " + angle)}`, `= <b>${ref}°</b>`]
+    });
+  }
+});
+
+S.push({
+  id: "power-of-point", name: "Chord / secant / tangent (power of a point)", domain: "geometry", rit: 270, tag: "G-C.2",
+  teach: {
+    idea: "Two chords crossing inside: a·b = c·d. Two secants from an outside point: (whole₁)(near₁) = (whole₂)(near₂). Tangent + secant: t² = (whole)(near).",
+    mnemonic: "Always 'outer × whole' for secants from outside; equal products for chords inside.",
+    example: { stem: "Chords cross: one is split into 4 and 6, the other into 3 and x. Find x.", steps: ["4·6 = 3·x", "24 = 3x", "x = <b>8</b>"] }
+  },
+  gen(rng, diff) {
+    const mode = rng.pick(["chord", "tangent"]);
+    if (mode === "chord") {
+      // a*b = c*x ; pick so x integer
+      const a = rng.int(D(diff, 2, 3, 4), D(diff, 6, 8, 10));
+      const b = rng.int(D(diff, 4, 5, 6), D(diff, 9, 12, 15));
+      const c = rng.pick([1, 2, 3, 4, 6].filter(k => (a * b) % k === 0));
+      const x = (a * b) / c;
+      return numProblem({
+        stem: `Two chords intersect inside a circle. One is divided into segments ${a} and ${b}; the other into ${c} and x. Find x.`,
+        answer: x, answerHTML: `x = ${x}`,
+        solution: [`${a}·${b} = ${c}·x`, `${a * b} = ${c}x`, `x = <b>${x}</b>`],
+        misses: [{ near: a * b - c, msg: "Use the product rule (multiply the two known segments, then divide), not subtraction." }]
+      });
+    }
+    // tangent-secant: t^2 = whole * near ; pick whole, near so t^2 is perfect square
+    const tries = [[2, 8], [4, 9], [3, 12], [1, 9], [2, 18], [4, 16], [5, 20], [3, 27], [6, 24]];
+    const pick = rng.pick(tries.filter(p => U.isPerfectSquare(p[0] * p[1])));
+    const near = pick[0], whole = pick[1]; const far = whole - near; const t = Math.round(Math.sqrt(near * whole));
+    return numProblem({
+      stem: `From an external point, a tangent of length t and a secant are drawn. The secant's external segment is ${near} and its far segment is ${far} (so the whole secant is ${whole}). Find t.`,
+      answer: t, answerHTML: `t = ${t}`,
+      solution: [`t² = (external)(whole) = ${near}·${whole}`, `t² = ${near * whole}`, `t = <b>${t}</b>`],
+      misses: [{ near: near * whole, msg: "That's t² — take the square root to get t." }, { near: Math.round(Math.sqrt(near * far) * 100) / 100, msg: "Use the WHOLE secant (external × whole), not external × far." }]
+    });
+  }
+});
+
+S.push({
+  id: "parallel-perp-line", name: "Parallel / perpendicular line through a point", domain: "geometry", rit: 262, tag: "G-GPE.5",
+  teach: {
+    idea: "Parallel lines share the SAME slope. Perpendicular lines have slopes that are NEGATIVE RECIPROCALS (m and −1/m). Then use point-slope: y − y₁ = m(x − x₁).",
+    mnemonic: "Parallel = same slope. Perpendicular = flip and negate.",
+    example: { stem: "Line through (1, 2) perpendicular to y = 2x + 5.", steps: ["Perp slope = −1/2", "y − 2 = −½(x − 1) → y = <b>−½x + 5/2</b>"] }
+  },
+  gen(rng, diff) {
+    // slope of given line: integer magnitude >= 2 so negative reciprocal is always a proper fraction
+    const m = rng.sign() * rng.int(2, D(diff, 3, 4, 5));
+    const px = rng.sign() * rng.int(1, D(diff, 3, 5, 7)); // nonzero so sign-slip intercept differs
+    const py = rng.int(D(diff, -3, -5, -7), D(diff, 3, 5, 7));
+    const givenB = rng.int(-9, 9);
+    const kind = rng.pick(["parallel", "perpendicular"]);
+    if (kind === "parallel") {
+      const b = py - m * px; // same slope, integer
+      const perpS = `${-m < 0 ? "&minus;" : ""}1/${Math.abs(m)}`;
+      return mcProblem({
+        stem: `Find the equation of the line through (${px}, ${py}) parallel to y = ${lin(m, givenB)}.`,
+        solution: [`Parallel → same slope m = ${m}`, `y ${py < 0 ? "+ " + Math.abs(py) : "− " + py} = ${m}(x ${px < 0 ? "+ " + Math.abs(px) : "− " + px})`, `y = <b>${lin(m, b)}</b>`]
+      }, mkMC(rng, `y = ${lin(m, b)}`, [
+        { html: `y = ${lin(-m, py + m * px)}`, miss: "You negated the slope — parallel lines keep the SAME slope." },
+        { html: `y = ${lin(m, py + m * px)}`, miss: "Sign slip in the intercept: b = y₁ − m·x₁, so b = " + py + " − (" + m + ")(" + px + ")." },
+        { html: `y = ${perpS}x ${b >= 0 ? "+ " + b : "&minus; " + Math.abs(b)}`, miss: "That's the PERPENDICULAR slope — for parallel you keep slope m unchanged." }
+      ]));
+    }
+    // perpendicular: slope = -1/m, a proper fraction since |m| >= 2
+    const perpNeg = (-1 / m) < 0; // is the correct perpendicular slope negative?
+    const correctS = `${perpNeg ? "&minus;" : ""}1/${Math.abs(m)}`;
+    const wrongSignS = `${perpNeg ? "" : "&minus;"}1/${Math.abs(m)}`;
+    return mcProblem({
+      stem: `What is the slope of the line through (${px}, ${py}) that is perpendicular to y = ${lin(m, givenB)}?`,
+      solution: [`Given slope = ${m}`, `Perpendicular slope = negative reciprocal of ${m} = −1/(${m})`, `= <b>${correctS}</b>`]
+    }, mkMC(rng, correctS, [
+      { html: `${m}`, miss: "That's the original slope — perpendicular needs the NEGATIVE RECIPROCAL." },
+      { html: `${-m}`, miss: "You only negated; you must also take the reciprocal (flip the fraction)." },
+      { html: wrongSignS, miss: "You took the reciprocal but used the wrong sign — negate it." }
+    ]));
+  }
+});
+
+  // ----------------------------------------------------------------
+
+S.push({
+  id: "expected-value", name: "Expected value of a distribution", domain: "stats", rit: 262, tag: "S-MD.2",
+  teach: {
+    idea: "Expected value = sum of (each value &times; its probability). It is the long-run average outcome.",
+    mnemonic: "Multiply each payoff by its chance, then add them all up.",
+    example: { stem: "Win $0 (p=0.5), $2 (p=0.3), $10 (p=0.2). E(X)?", steps: ["0(.5) + 2(.3) + 10(.2)", "0 + 0.6 + 2.0", "<b>2.6</b>"] }
+  },
+  gen(rng, diff) {
+    const k = D(diff, 3, 3, 4);
+    let parts = [];
+    let rem = 10;
+    for (let i = 0; i < k - 1; i++) { const p = rng.int(1, rem - (k - 1 - i)); parts.push(p); rem -= p; }
+    parts.push(rem);
+    parts = rng.shuffle(parts);
+    const vals = [];
+    const used = new Set();
+    for (let i = 0; i < k; i++) { let v; do { v = rng.int(D(diff,0,0,-4), D(diff,8,12,15)); } while (used.has(v)); used.add(v); vals.push(v); }
+    let ev = 0;
+    const rows = [];
+    for (let i = 0; i < k; i++) { ev += vals[i] * (parts[i] / 10); rows.push(`${vals[i]} (p=${(parts[i]/10).toFixed(1)})`); }
+    ev = U.round(ev, 2);
+    const terms = vals.map((v,i) => `${v}(${(parts[i]/10).toFixed(1)})`).join(" + ");
+    const sumVals = vals.reduce((a,b)=>a+b,0);
+    return numProblem({
+      stem: `A variable X takes these values with the given probabilities:<br>${rows.join(", ")}.<br>Find the expected value E(X) (2 decimals).`,
+      answer: ev, answerHTML: `E(X) = ${ev}`, tol: 0.02,
+      solution: [`E(X) = &Sigma; value &times; probability`, `= ${terms}`, `= <b>${ev}</b>`],
+      misses: [{ near: U.round(sumVals / k, 2), msg: "You averaged the values evenly &mdash; weight each by its probability instead." }]
+    });
+  }
+});
+
+S.push({
+  id: "population-sd", name: "Population standard deviation", domain: "stats", rit: 270, tag: "S-ID.2",
+  teach: {
+    idea: "Population SD: find the mean, square each deviation from the mean, average those squares (variance), then take the square root.",
+    mnemonic: "Deviation, square, average, root.",
+    example: { stem: "Data 2,4,6 (population). SD?", steps: ["mean = 4", "deviations 2,0,2 &rarr; squares 4,0,4", "variance = 8/3 &asymp; 2.667", "SD = &radic;2.667 &asymp; <b>1.63</b>"] }
+  },
+  gen(rng, diff) {
+    const n = D(diff, 4, 5, 6);
+    const mean = rng.int(D(diff,5,8,10), D(diff,10,15,20));
+    let devs = [];
+    let s = 0;
+    for (let i = 0; i < n - 1; i++) { const d = rng.int(D(diff,-3,-5,-7), D(diff,3,5,7)); devs.push(d); s += d; }
+    devs.push(-s);
+    const data = devs.map(d => mean + d);
+    const ss = devs.reduce((a,d)=>a+d*d,0);
+    const variance = ss / n;
+    const sd = U.round(Math.sqrt(variance), 2);
+    return numProblem({
+      stem: `Find the population standard deviation of this data set (round to 2 decimals):<br>${data.join(", ")}`,
+      answer: sd, answerHTML: `&sigma; = ${sd}`, tol: 0.03,
+      solution: [`mean = ${mean}`, `&sigma;&sup2; = &Sigma;(x&minus;mean)&sup2; / n = ${ss}/${n} = ${U.round(variance,3)}`, `&sigma; = &radic;${U.round(variance,3)} = <b>${sd}</b>`],
+      misses: [
+        { near: U.round(Math.sqrt(ss/(n-1)),2), msg: "You divided by n&minus;1 (sample SD). For population SD divide by n." },
+        { near: U.round(variance,2), msg: "That is the variance &mdash; take its square root to get the standard deviation." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "mean-abs-dev", name: "Mean absolute deviation", domain: "stats", rit: 260, tag: "S-ID.2",
+  teach: {
+    idea: "MAD = average distance from the mean. Find the mean, take the |deviation| of each point, then average those distances.",
+    mnemonic: "Absolute value, not squares &mdash; MAD measures plain distance.",
+    example: { stem: "Data 3,7,8,10. MAD?", steps: ["mean = 7", "|distances| = 4,0,1,3", "MAD = 8/4 = <b>2</b>"] }
+  },
+  gen(rng, diff) {
+    const n = D(diff, 4, 5, 5);
+    const mean = rng.int(6, D(diff,12,15,20));
+    let devs, absSum;
+    let guard = 0;
+    do {
+      devs = []; let s = 0;
+      for (let i = 0; i < n - 1; i++) { const d = rng.int(D(diff,-4,-6,-8), D(diff,4,6,8)); devs.push(d); s += d; }
+      devs.push(-s);
+      absSum = devs.reduce((a,d)=>a+Math.abs(d),0);
+      guard++;
+    } while ((absSum % n !== 0 || absSum === 0) && guard < 200);
+    const data = devs.map(d => mean + d);
+    const mad = U.round(absSum / n, 2);
+    return numProblem({
+      stem: `Find the mean absolute deviation (MAD) of this data set:<br>${data.join(", ")}`,
+      answer: mad, answerHTML: `MAD = ${mad}`, tol: 0.02,
+      solution: [`mean = ${mean}`, `|deviations| = ${devs.map(d=>Math.abs(d)).join(", ")}`, `MAD = ${absSum}/${n} = <b>${mad}</b>`],
+      misses: [{ near: U.round(devs.reduce((a,d)=>a+d*d,0)/n,2), msg: "You squared the deviations &mdash; MAD uses absolute values, not squares." }]
+    });
+  }
+});
+
+S.push({
+  id: "five-num-summary", name: "Five-number summary & boxplot", domain: "stats", rit: 264, tag: "S-ID.1",
+  teach: {
+    idea: "Order the data. The median splits it; Q1 is the median of the lower half, Q3 the median of the upper half (excluding the overall median when n is odd).",
+    mnemonic: "Min, Q1, median, Q3, max &mdash; quarters of the sorted data.",
+    example: { stem: "Data 2,4,5,7,9,10,12 (n=7). Find Q1.", steps: ["median = 7 (middle)", "lower half = 2,4,5", "Q1 = median of lower = <b>4</b>"] }
+  },
+  gen(rng, diff) {
+    const n = D(diff, 7, 7, 9);
+    const data = [];
+    let cur = rng.int(1, 6);
+    for (let i = 0; i < n; i++) { data.push(cur); cur += rng.int(1, 4); }
+    const sorted = data.slice();
+    const med = sorted[(n-1)/2];
+    const lower = sorted.slice(0, (n-1)/2);
+    const upper = sorted.slice((n+1)/2);
+    function medOf(arr){ const m=arr.length; return m%2? arr[(m-1)/2] : (arr[m/2-1]+arr[m/2])/2; }
+    const q1 = medOf(lower), q3 = medOf(upper);
+    const iqr = q3 - q1;
+    const ask = D(diff, "Q1", "Q3", "the interquartile range (IQR = Q3 &minus; Q1)");
+    const answer = D(diff, q1, q3, iqr);
+    const aLabel = D(diff, "Q1", "Q3", "IQR");
+    return numProblem({
+      stem: `For this data set, find ${ask}:<br>${data.join(", ")}`,
+      answer: answer, answerHTML: `${aLabel} = ${answer}`,
+      solution: [`sorted: ${sorted.join(", ")}`, `median = ${med}, Q1 = ${q1}, Q3 = ${q3}`, `${aLabel} = <b>${answer}</b>`],
+      misses: [{ near: med, msg: "That is the median &mdash; re-read which value the question asks for." }]
+    });
+  }
+});
+
+S.push({
+  id: "line-best-fit", name: "Line of best fit & predict", domain: "stats", rit: 266, tag: "S-ID.6",
+  teach: {
+    idea: "A best-fit line y = mx + b summarizes a trend. Plug an x-value into the equation to predict y.",
+    mnemonic: "Substitute x, multiply by the slope, add the intercept.",
+    example: { stem: "y = 3x + 5. Predict y when x = 4.", steps: ["y = 3(4) + 5", "y = 12 + 5", "<b>17</b>"] }
+  },
+  gen(rng, diff) {
+    const m = rng.nonzero(2, D(diff,5,7,9)) * (diff >= 3 ? rng.sign() : 1);
+    const b = rng.int(D(diff,1,-5,-10), D(diff,12,15,20));
+    const x = rng.int(D(diff,3,5,6), D(diff,8,12,16));
+    const y = m * x + b;
+    return mcProblem({
+      stem: `The line of best fit is y = ${lin(m,b)}. Use it to predict y when x = ${x}.`,
+      solution: [`y = ${m}(${x}) ${pm(b)}`, `y = ${m*x} ${pm(b)}`, `y = <b>${y}</b>`]
+    }, mkMC(rng, `${y}`, [
+      { html: `${m * x}`, miss: "You forgot to add the y-intercept b." },
+      { html: `${m + x + b}`, miss: "You added m, x, and b &mdash; you must multiply m by x first." },
+      { html: `${m * (x + b)}`, miss: "You added b to x before multiplying; substitute only x into mx, then add b." }
+    ]));
+  }
+});
+
+S.push({
+  id: "two-way-relfreq", name: "Two-way relative frequency", domain: "stats", rit: 268, tag: "S-ID.5",
+  teach: {
+    idea: "A conditional relative frequency divides a cell by its row (or column) total &mdash; not the grand total. 'Of the people who X, what fraction also Y?' uses the X group as the denominator.",
+    mnemonic: "Conditional = part of its OWN row/column total, not the whole table.",
+    example: { stem: "Of 40 dog owners, 30 also like cats. Fraction?", steps: ["denominator = 40 (dog owners)", "30 / 40", "<b>0.75</b>"] }
+  },
+  gen(rng, diff) {
+    const part = rng.int(D(diff,6,8,9), D(diff,18,24,30));
+    const rowTotal = part + rng.int(D(diff,4,6,9), D(diff,12,18,28));
+    const other = rng.int(D(diff,5,8,10), D(diff,20,30,40));
+    const otherTotal = other + rng.int(5, 30);
+    const grand = rowTotal + otherTotal;
+    const ans = U.round(part / rowTotal, 2);
+    return numProblem({
+      stem: `A survey of ${grand} students. Among the ${rowTotal} who walk to school, ${part} also bring lunch from home. ` +
+            `What is the relative frequency of bringing lunch <b>given</b> that a student walks to school? (2 decimals)`,
+      answer: ans, answerHTML: `${ans}`, tol: 0.01,
+      solution: [`condition on walkers &rarr; denominator = ${rowTotal}`, `${part} / ${rowTotal}`, `= <b>${ans}</b>`],
+      misses: [
+        { near: U.round(part / grand, 2), msg: "You divided by the grand total &mdash; a conditional frequency divides by the row total." }
+      ]
+    });
+  }
+});
+
+S.push({
+  id: "prob-replacement", name: "Probability with/without replacement", domain: "stats", rit: 268, tag: "S-CP.8",
+  teach: {
+    idea: "For successive draws, multiply the probabilities. WITHOUT replacement, the counts shrink after each draw &mdash; both the favorable count and the total drop by 1.",
+    mnemonic: "No replacement = remember to remove the item: total AND favorable both go down.",
+    example: { stem: "Bag: 4 red, 6 blue. P(red then red) without replacement?", steps: ["1st: 4/10", "2nd: 3/9 (one red gone)", "(4/10)(3/9) = 12/90 = <b>0.13</b>"] }
+  },
+  gen(rng, diff) {
+    const target = rng.int(D(diff,3,4,5), D(diff,5,6,7));
+    const otherC = rng.int(D(diff,3,4,5), D(diff,6,7,9));
+    const total = target + otherC;
+    const withRepl = rng.bool();
+    let p;
+    if (withRepl) p = (target / total) * (target / total);
+    else p = (target / total) * ((target - 1) / (total - 1));
+    const ans = U.round(p, 3);
+    const wrongNoReduce = U.round((target / total) * (target / total), 3);
+    return numProblem({
+      stem: `A bag has ${target} green and ${otherC} yellow marbles. You draw two marbles ${withRepl ? "<b>with</b>" : "<b>without</b>"} replacement. ` +
+            `Find P(both green) as a decimal (3 decimals).`,
+      answer: ans, answerHTML: `${ans}`, tol: 0.002,
+      solution: withRepl
+        ? [`with replacement, total stays ${total}`, `(${target}/${total}) &times; (${target}/${total})`, `= <b>${ans}</b>`]
+        : [`without replacement, counts drop`, `(${target}/${total}) &times; (${target-1}/${total-1})`, `= <b>${ans}</b>`],
+      misses: withRepl ? [] : [
+        { near: wrongNoReduce, msg: "Without replacement you must reduce BOTH counts: the second draw is (g&minus;1)/(total&minus;1)." }
+      ]
+    });
+  }
+});
 
   // index the catalog
   const byId = {};

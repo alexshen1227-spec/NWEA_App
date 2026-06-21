@@ -40,6 +40,37 @@
     const t = U.daysBetween(r.mem.lastMs, U.nowMs());
     return fsrs.retrievability(t, r.mem.S);
   }
+  // accuracy over the most recent n attempts of a single skill (from the log)
+  function recentAccuracy(id, n) {
+    const log = S().log; let seen = 0, correct = 0;
+    for (let i = log.length - 1; i >= 0 && seen < (n || 6); i--) {
+      if (log[i].skillId === id) { seen++; if (log[i].correct) correct++; }
+    }
+    return seen ? correct / seen : null;
+  }
+  // adaptive within-skill difficulty (1=easy, 2=medium, 3=hard): keep every rep
+  // at the student's edge. Brand-new -> gentle; acing it -> push; struggling -> ease.
+  function targetDifficulty(id) {
+    const r = S().skills[id];
+    if (!r || !r.introduced || (r.attempts || 0) === 0) return 1;
+    const acc = recentAccuracy(id, 6); const strength = skillStrength(id);
+    if (acc == null) return 1;
+    if (acc >= 0.8 && strength >= 0.45) return 3;
+    if (acc < 0.5 || strength < 0.2) return 1;
+    return 2;
+  }
+  // the student's weakest introduced skills (their highest-leverage practice)
+  function weakSkills(n) {
+    return APP.skills.filter(s => { const r = S().skills[s.id]; return r && r.introduced && (r.attempts || 0) >= 1; })
+      .map(s => {
+        const r = S().skills[s.id];
+        const acc = r.attempts ? r.correct / r.attempts : 0;
+        const weakness = (1 - skillStrength(s.id)) * 0.5 + (1 - acc) * 0.5 + (r.bugs || 0) * 0.02;
+        return { skill: s, weakness };
+      })
+      .sort((a, b) => b.weakness - a.weakness)
+      .slice(0, n || 8).map(x => x.skill);
+  }
 
   // ---- session construction ----
   function dueList(now) {
@@ -103,18 +134,46 @@
     }
 
     items = spreadByDomain(items);
-    // attach a fresh problem seed to each
-    items.forEach(it => { it.seed = U.newSeed(); });
+    // attach a fresh problem seed + adaptive difficulty to each (new skills start gentle)
+    items.forEach(it => { it.seed = U.newSeed(); it.diff = it.isNew ? 1 : targetDifficulty(it.skillId); });
     return items;
   }
 
-  // build the actual problem object for an item (fresh instance from its seed)
+  // a focused session built from the student's weakest skills (their fruit)
+  function buildFocusSession(n) {
+    return weakSkills(n || 12).map(s => ({
+      skillId: s.id, domain: s.domain, kind: "focus", isNew: false, needsLearn: false,
+      seed: U.newSeed(), diff: targetDifficulty(s.id)
+    }));
+  }
+
+  // a quick diagnostic: one problem from a spread of skills across difficulty &
+  // domain, no teaching, one-shot — seeds the ability estimate and finds weak spots fast.
+  function buildCalibration(n) {
+    n = n || 14;
+    const sorted = APP.skills.slice().sort((a, b) => a.rit - b.rit);
+    const picked = []; const seen = new Set();
+    const step = sorted.length / n;
+    for (let i = 0; i < n; i++) { const s = sorted[Math.min(sorted.length - 1, Math.floor(i * step))]; if (!seen.has(s.id)) { seen.add(s.id); picked.push(s); } }
+    // ensure at least 2 per domain
+    const byDom = {}; APP.skills.forEach(s => { (byDom[s.domain] = byDom[s.domain] || []).push(s); });
+    Object.keys(byDom).forEach(d => {
+      while (picked.filter(s => s.domain === d).length < 2) {
+        const s = byDom[d].find(x => !seen.has(x.id)); if (!s) break; seen.add(s.id); picked.push(s);
+      }
+    });
+    return picked.map(s => ({ skillId: s.id, domain: s.domain, kind: "calibrate", isNew: false, needsLearn: false, seed: U.newSeed(), diff: 2 }));
+  }
+
+  // build the actual problem object for an item (fresh instance from its seed + difficulty)
   function makeProblem(item) {
     const skill = APP.skillById[item.skillId];
     const rng = U.makeRng(item.seed);
-    const p = skill.gen(rng);
+    const diff = item.diff != null ? item.diff : targetDifficulty(item.skillId);
+    const p = skill.gen(rng, diff);
     p.skill = skill;
     p.item = item;
+    p.diff = diff;
     return p;
   }
 
@@ -143,7 +202,7 @@
     r.lastMs = now;
 
     // log (drives ability estimate)
-    st.log.push({ ms: now, skillId: item.skillId, d: skill.rit, correct: correct ? 1 : 0, taken: msTaken, grade, seed: item.seed });
+    st.log.push({ ms: now, skillId: item.skillId, d: skill.rit, correct: correct ? 1 : 0, taken: msTaken, grade, seed: item.seed, diff: item.diff });
 
     // daily + totals
     const day = APP.store.dailyRec();
@@ -151,8 +210,8 @@
     if (!wasIntroduced && item.isNew) day.newIntroduced++;
     st.totals.problems++; if (correct) st.totals.correct++; st.totals.seconds += Math.round(msTaken / 1000);
 
-    // error log for missed problems (store seed to regenerate exact item)
-    if (!correct) st.errors.push({ skillId: item.skillId, seed: item.seed, ms: now });
+    // error log for missed problems (store seed + difficulty to regenerate exact item)
+    if (!correct) st.errors.push({ skillId: item.skillId, seed: item.seed, diff: item.diff, ms: now });
 
     APP.store.save();
     return { grade, correct, requeue: !correct, slip };
@@ -196,7 +255,7 @@
   }
 
   APP.engine = {
-    estimateAbility, buildSession, makeProblem, processResponse, endSession, counts,
-    skillStrength, isMastered, domainMastery, predictedRecall
+    estimateAbility, buildSession, buildFocusSession, buildCalibration, makeProblem, processResponse, endSession, counts,
+    skillStrength, isMastered, domainMastery, predictedRecall, targetDifficulty, weakSkills, recentAccuracy
   };
 })();
