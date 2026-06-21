@@ -1,0 +1,8 @@
+# Local editor / launch config — not part of the app
+.claude/
+
+# OS junk
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
